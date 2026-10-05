@@ -7,7 +7,7 @@ Sistema completo, independente e profissional de inscrição com **Carrinho de C
 ## 🚀 Principais Funcionalidades
 
 1. **Lógica de Carrinho Independente:**
-   - **Ingressos de Adultos (R$ 35,00 cada):** Campo obrigatório para o responsável e campos dinâmicos para o nome completo de cada participante extra. Limite rígido de **120 vagas**.
+   - **Ingressos de Adultos (R$ 40,00 cada):** Campo obrigatório para o responsável e campos dinâmicos para o nome completo de cada participante extra. Limite rígido de **120 vagas**.
    - **Almoço no Evento (R$ 25,00 cada):** Item 100% avulso e opcional. O participante pode comprar a quantidade que quiser (0, 1, 2, 3...), sem estar amarrado à quantidade de adultos. Limite rígido de **50 almoços** (com aviso automático de "Esgotado").
    - **Espaço Kids (R$ 0,00 - Gratuito):** Entrada grátis para crianças de 0 a 11 anos, com campos para Nome e Idade. Controle separado de **20 crianças** (3 a 11 anos) e **6 bebês** (até 2 anos).
    - **Resumo do Pedido em Tempo Real:** Mostra os itens adicionados, subtotais e o total geral com cálculo instantâneo.
