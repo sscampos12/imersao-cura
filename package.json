@@ -1,0 +1,23 @@
+{
+  "name": "imersao-cura-inscricao",
+  "version": "1.0.0",
+  "description": "Sistema completo de inscrição, carrinho dinâmico, integração Efí Bank e Google Sheets para o evento Imersão de Cura",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "keywords": [
+    "inscricao",
+    "eventos",
+    "efi-bank",
+    "pix",
+    "cartao",
+    "google-sheets"
+  ],
+  "author": "Imersão de Cura",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

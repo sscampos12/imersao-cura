@@ -1,0 +1,465 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Inscrição — Imersão de Cura Rio de Janeiro</title>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap"
+    rel="stylesheet"
+  />
+  <link rel="stylesheet" href="style.css" />
+</head>
+
+<body>
+  <div class="app-container">
+
+    <div style="padding: 20px 0; margin-bottom: 20px;">
+      <a
+        href="index.html"
+        style="color: #818cf8; text-decoration: none; font-size: 0.9rem; font-weight: 600;"
+      >
+        ← Voltar para a página principal
+      </a>
+
+      <h1 style="font-size: 2rem; font-weight: 800; color: #ffffff; margin-top: 10px;">
+        Formulário de Inscrição
+      </h1>
+
+      <p style="color: #94a3b8; font-size: 0.95rem;">
+        Preencha seus dados, selecione os itens e realize o pagamento com segurança.
+      </p>
+    </div>
+
+    <!-- Informações e Regras -->
+    <div style="background: rgba(99, 102, 241, 0.05); border: 1px solid rgba(99, 102, 241, 0.2); border-radius: 12px; padding: 20px; margin-bottom: 30px; font-size: 0.9rem; color: #cbd5e1; line-height: 1.6;">
+      <p style="margin-bottom: 10px; font-weight: 600; color: #fff;">
+        📌 Regras do Evento:
+      </p>
+
+      <p style="margin-bottom: 6px;">
+        ✨ <strong>Inscrição para adultos:</strong>
+        R$ 35,00 (somente imersão).
+      </p>
+
+      <p style="margin-bottom: 6px;">
+        🍽️ <strong>Almoço opcional:</strong>
+        Adultos, crianças e bebês podem incluir almoço por R$ 25,00 cada.
+      </p>
+
+      <p style="margin-bottom: 6px;">
+        👶 <strong>Bebês até 2 anos:</strong>
+        Não pagam inscrição, ficam com os responsáveis (Limite de 6 bebês).
+      </p>
+
+      <p style="margin: 0;">
+        🧒 <strong>Crianças de 3 a 11 anos:</strong>
+        Não pagam inscrição e participam da programação Kids
+        (Limite de 20 crianças).
+      </p>
+    </div>
+
+    <!-- Contador de Vagas em Tempo Real -->
+    <div
+      class="availability-bar"
+      id="availabilityBar"
+      style="margin-bottom: 30px;"
+    >
+      <div class="avail-item">
+        <span class="avail-label">Vagas Imersão:</span>
+        <span class="avail-badge" id="badgeAdultos">Carregando...</span>
+      </div>
+
+      <div class="avail-item">
+        <span class="avail-label">Almoços Disponíveis:</span>
+        <span class="avail-badge" id="badgeAlmocos">Carregando...</span>
+      </div>
+
+      <div class="avail-item">
+        <span class="avail-label">Espaço Kids:</span>
+        <span class="avail-badge" id="badgeKids">Carregando...</span>
+      </div>
+    </div>
+
+    <!-- Formulário Principal -->
+    <main class="form-container">
+      <form id="formInscricao" onsubmit="event.preventDefault();">
+
+        <!-- SEÇÃO 1: DADOS DO RESPONSÁVEL -->
+        <section class="section-card">
+          <div class="section-title-wrap">
+            <span class="step-num">1</span>
+
+            <div>
+              <h2 class="section-title">
+                Dados do Responsável pela Inscrição
+              </h2>
+
+              <p class="section-desc">
+                Informe seus dados para contato e recebimento do comprovante.
+              </p>
+            </div>
+          </div>
+
+          <div class="grid-2">
+            <div class="form-group full-col">
+              <label for="nomeResponsavel">
+                Nome completo do responsável *
+              </label>
+
+              <input
+                type="text"
+                id="nomeResponsavel"
+                placeholder="Ex: Maria Silva"
+                required
+              />
+            </div>
+
+            <div class="form-group">
+              <label for="whatsapp">WhatsApp com DDD *</label>
+
+              <input
+                type="tel"
+                id="whatsapp"
+                placeholder="(21) 99999-9999"
+                required
+              />
+            </div>
+
+            <div class="form-group">
+              <label for="email">E-mail *</label>
+
+              <input
+                type="email"
+                id="email"
+                placeholder="seu@email.com"
+                required
+              />
+            </div>
+          </div>
+        </section>
+
+        <!-- SEÇÃO 2: ITENS DO CARRINHO -->
+        <section class="section-card">
+          <div class="section-title-wrap">
+            <span class="step-num">2</span>
+
+            <div>
+              <h2 class="section-title">
+                Selecione os Itens do Seu Pedido
+              </h2>
+
+              <p class="section-desc">
+                Adicione as inscrições e os almoços de forma 100% independente.
+              </p>
+            </div>
+          </div>
+
+          <div class="products-grid">
+
+            <!-- PRODUTO 1: INSCRIÇÃO ADULTO -->
+            <div class="product-card" id="cardAdulto">
+              <div class="product-header">
+                <div class="product-info">
+                  <span class="product-category">Ingresso Principal</span>
+
+                  <h3 class="product-name">
+                    Imersão de Cura — Adulto
+                  </h3>
+
+                  <p class="product-desc">
+                    Entrada completa para a programação da imersão
+                    durante todo o evento.
+                  </p>
+                </div>
+
+                <div class="product-price">
+                  <span class="currency">R$</span>
+                  <span class="amount">35</span>
+                  <span class="cents">,00</span>
+                  <span class="unit">por pessoa</span>
+                </div>
+              </div>
+
+              <div class="product-controls">
+                <span class="stock-info" id="stockAdultos">
+                  120 vagas no total
+                </span>
+
+                <div class="qty-selector">
+                  <button
+                    type="button"
+                    class="btn-qty"
+                    id="btnMinusAdulto"
+                    onclick="alterarAdultos(-1)"
+                  >
+                    −
+                  </button>
+
+                  <span class="qty-display" id="qtdAdultosDisplay">1</span>
+
+                  <button
+                    type="button"
+                    class="btn-qty"
+                    id="btnPlusAdulto"
+                    onclick="alterarAdultos(1)"
+                  >
+                    +
+                  </button>
+                </div>
+              </div>
+
+              <!-- Nomes dos Adultos Adicionais -->
+              <div
+                class="extra-adults-container"
+                id="extraAdultsContainer"
+                style="display: none;"
+              >
+                <p class="extra-title">
+                  👤 Nomes dos demais adultos inscritos:
+                </p>
+
+                <div id="extraAdultsInputs"></div>
+              </div>
+            </div>
+
+            <!-- PRODUTO 2: ALMOÇO -->
+            <div class="product-card" id="cardAlmoco">
+              <div class="product-header">
+                <div class="product-info">
+                  <span class="product-category highlight-category">
+                    Alimentação Opcional
+                  </span>
+
+                  <h3 class="product-name">Almoço no Evento</h3>
+
+                  <p class="product-desc">
+                    Buffet completo servido no intervalo da imersão
+                    (R$ 25,00 por refeição).
+                  </p>
+                </div>
+
+                <div class="product-price">
+                  <span class="currency">R$</span>
+                  <span class="amount">25</span>
+                  <span class="cents">,00</span>
+                  <span class="unit">por refeição</span>
+                </div>
+              </div>
+
+              <div class="product-controls">
+                <span class="stock-info" id="stockAlmocos">
+                  50 almoços no total
+                </span>
+
+                <div class="qty-selector">
+                  <button
+                    type="button"
+                    class="btn-qty"
+                    id="btnMinusAlmoco"
+                    onclick="alterarAlmocos(-1)"
+                  >
+                    −
+                  </button>
+
+                  <span class="qty-display" id="qtdAlmocosDisplay">0</span>
+
+                  <button
+                    type="button"
+                    class="btn-qty"
+                    id="btnPlusAlmoco"
+                    onclick="alterarAlmocos(1)"
+                  >
+                    +
+                  </button>
+                </div>
+              </div>
+
+              <p class="almoco-hint">
+                💡 Você pode comprar quantos almoços quiser,
+                para adultos, crianças ou bebês.
+              </p>
+            </div>
+
+            <!-- PRODUTO 3: ESPAÇO KIDS -->
+            <div class="product-card kids-card">
+              <div class="product-header">
+                <div class="product-info">
+                  <span class="product-category kids-category">
+                    0 a 11 anos
+                  </span>
+
+                  <h3 class="product-name">Espaço Kids & Bebês</h3>
+
+                  <p class="product-desc">
+                    Crianças de 3 a 11 anos e bebês de até 2 anos.
+                  </p>
+                </div>
+
+                <div class="product-price free-price">
+                  <span class="badge-free">GRÁTIS</span>
+                  <span class="unit">Inscrição R$ 0,00</span>
+                </div>
+              </div>
+
+              <div class="kids-stock-limits">
+                <span class="pill" id="pillBebes">
+                  Bebês (0-2a): 6 vagas
+                </span>
+
+                <span class="pill" id="pillCriancas">
+                  Kids (3-11a): 20 vagas
+                </span>
+              </div>
+
+              <div id="criancasContainer" class="criancas-list"></div>
+
+              <button
+                type="button"
+                class="btn-add-kid"
+                id="btnAddKid"
+                onclick="adicionarCrianca()"
+              >
+                + Adicionar Criança / Bebê
+              </button>
+            </div>
+
+          </div>
+        </section>
+
+        <!-- SEÇÃO 3: RESUMO E PAGAMENTO -->
+        <section class="section-card summary-card">
+          <div class="summary-header">
+            <h2 class="summary-title">🛒 Resumo do Carrinho</h2>
+
+            <span class="item-count-badge" id="itemCountBadge">
+              1 item selecionado
+            </span>
+          </div>
+
+          <div class="cart-items-list" id="cartItemsList">
+            <!-- Gerado dinamicamente via app.js -->
+          </div>
+
+          <!-- Escolha da Forma de Pagamento (Atualizado para Mercado Pago em ambos) -->
+          <div class="gateway-select-container" id="gatewayContainer">
+            <div class="gateway-label" id="paymentMethodLabel">
+              Como deseja pagar?
+            </div>
+
+            <div
+              class="gateway-options"
+              role="radiogroup"
+              aria-labelledby="paymentMethodLabel"
+            >
+              <!-- PIX VIA MERCADO PAGO -->
+              <label class="gateway-radio-card" id="cardOptPix">
+                <input
+                  type="radio"
+                  name="paymentGateway"
+                  value="pix"
+                  checked
+                  onchange="trocarGateway('pix')"
+                />
+
+                <div class="gateway-text">
+                  <strong>⚡ Pix</strong>
+                  <span>Pagamento via Mercado Pago</span>
+                </div>
+              </label>
+
+              <!-- CARTÃO VIA MERCADO PAGO -->
+              <label class="gateway-radio-card" id="cardOptMp">
+                <input
+                  type="radio"
+                  name="paymentGateway"
+                  value="mercadopago"
+                  onchange="trocarGateway('mercadopago')"
+                />
+
+                <div class="gateway-text">
+                  <strong>💳 Cartão de Crédito</strong>
+                  <span>Pagamento via Mercado Pago</span>
+                </div>
+              </label>
+            </div>
+          </div>
+
+          <!-- Container do Checkout Bricks -->
+          <div
+            id="paymentBrick_container"
+            style="margin-top: 20px;"
+          ></div>
+
+          <div class="summary-footer">
+            <div class="total-row">
+              <span class="total-label">Total a Pagar:</span>
+              <span class="total-value" id="cartTotal">R$ 35,00</span>
+            </div>
+
+            <div class="payment-methods-notice">
+              <span class="lock-icon">🔒</span>
+
+              <span id="gatewayNotice" aria-live="polite">
+                Pagamento processado com segurança pelo Mercado Pago.
+              </span>
+            </div>
+
+            <button
+              type="button"
+              class="btn-checkout"
+              id="btnSubmit"
+              onclick="finalizarPedido()"
+            >
+              <span id="btnSubmitText">
+                Finalizar Inscrição e Pagar
+              </span>
+
+              <span
+                class="spinner"
+                id="btnSpinner"
+                style="display: none;"
+              ></span>
+            </button>
+          </div>
+        </section>
+
+      </form>
+    </main>
+
+    <!-- Modal de Carregamento -->
+    <div
+      class="modal-overlay"
+      id="modalCheckout"
+      style="display: none;"
+    >
+      <div class="modal-content">
+        <div class="modal-spinner"></div>
+
+        <h3 class="modal-title">Gerando sua cobrança...</h3>
+
+        <p class="modal-desc">
+          Processando seu pedido com segurança.
+        </p>
+      </div>
+    </div>
+
+    <!-- Rodapé -->
+    <footer class="app-footer">
+      <p>© 2026 Imersão de Cura — Todos os direitos reservados.</p>
+
+      <p class="footer-sub">
+        Dúvidas? Entre em contato com nossa equipe pelo WhatsApp.
+      </p>
+    </footer>
+
+  </div>
+
+  <!-- SDK Oficial do Mercado Pago para Checkout Bricks -->
+  <script src="https://sdk.mercadopago.com/js/v2"></script>
+  <script src="app.js"></script>
+</body>
+</html>
