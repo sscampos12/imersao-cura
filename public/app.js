@@ -5,6 +5,7 @@
 
 const PRECO_ADULTO = 40;
 const PRECO_ALMOCO = 25;
+const PRECO_DOCE = 1.00;
 
 let checkoutBrickController = null;
 let enviandoPedido = false;
@@ -14,6 +15,7 @@ const state = {
   qtdAdultos: 1,
   adultosNomes: [],
   qtdAlmocos: 0,
+  qtdDoces: 0,
   criancas: [],
   gateway: 'pix',
 
@@ -34,7 +36,8 @@ const formatMoney = (val) =>
 function totalCarrinho() {
   return (
     state.qtdAdultos * PRECO_ADULTO +
-    state.qtdAlmocos * PRECO_ALMOCO
+    state.qtdAlmocos * PRECO_ALMOCO +
+    (state.qtdDoces || 0) * PRECO_DOCE
   );
 }
 
@@ -366,6 +369,25 @@ function alterarAlmocos(delta) {
   atualizarBadges();
 }
 
+// ---------------- CONTROLE DE DOCES (TESTE) ----------------
+
+function alterarDoces(delta) {
+  if (enviandoPedido || carregandoCheckout) return;
+
+  const novaQtd = (state.qtdDoces || 0) + delta;
+
+  if (novaQtd < 0) return;
+
+  state.qtdDoces = novaQtd;
+
+  const display = document.getElementById('qtdDocesDisplay');
+  if (display) {
+    display.textContent = state.qtdDoces;
+  }
+
+  atualizarCarrinho();
+}
+
 // ---------------- ESPAÇO KIDS ----------------
 
 function adicionarCrianca() {
@@ -520,6 +542,24 @@ function atualizarCarrinho() {
     list.appendChild(item);
   }
 
+  if ((state.qtdDoces || 0) > 0) {
+    const subtotal = state.qtdDoces * PRECO_DOCE;
+    totalItens += state.qtdDoces;
+
+    const item = document.createElement('div');
+    item.className = 'cart-line-item';
+
+    item.innerHTML = `
+      <span>
+        🍬 <strong>${state.qtdDoces}x</strong>
+        Doce de Teste (${formatMoney(PRECO_DOCE)} cada)
+      </span>
+      <strong>${formatMoney(subtotal)}</strong>
+    `;
+
+    list.appendChild(item);
+  }
+
   if (state.criancas.length > 0) {
     totalItens += state.criancas.length;
 
@@ -545,7 +585,7 @@ function atualizarCarrinho() {
   if (totalItens === 0) {
     list.innerHTML = `
       <p style="color: #94a3b8; font-size: 0.9rem; text-align: center; padding: 12px 0;">
-        Seu carrinho está vazio. Adicione ao menos um ingresso ou almoço.
+        Seu carrinho está vazio. Adicione ao menos um ingresso ou item.
       </p>
     `;
   }
@@ -592,7 +632,7 @@ function validarPedido() {
   }
 
   if (totalCarrinho() <= 0) {
-    alert('Selecione ao menos 1 ingresso ou 1 almoço no carrinho.');
+    alert('Selecione ao menos 1 item no carrinho.');
     return false;
   }
 
@@ -668,6 +708,7 @@ async function finalizarPedido() {
       qtdAdultos: state.qtdAdultos,
       adultosNomes: state.adultosNomes.map((nome) => nome.trim()),
       qtdAlmocos: state.qtdAlmocos,
+      qtdDoces: state.qtdDoces || 0,
 
       criancas: state.criancas.map((crianca) => ({
         ...crianca,
@@ -675,7 +716,7 @@ async function finalizarPedido() {
       })),
 
       gateway: 'mercadopago',
-      metodoPagamento: gatewayPedido, // Garante que envia 'pix' ou 'cartao' corretamente para o servidor
+      metodoPagamento: gatewayPedido,
     };
 
     const res = await fetch('/api/inscricao', {
@@ -708,7 +749,6 @@ async function finalizarPedido() {
         data.total
       );
     } else if (data.paymentUrl) {
-      // O servidor já gravou localmente e sincronizou com o Google Sheets antes de devolver o paymentUrl
       window.location.href = data.paymentUrl;
     } else {
       throw new Error(

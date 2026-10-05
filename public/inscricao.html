@@ -284,6 +284,31 @@
               </p>
             </div>
 
+            <!-- PRODUTO TESTE: DOCE (R$ 1,00) -->
+            <div class="product-card" id="cardDoce" style="border: 2px dashed #818cf8;">
+              <div class="product-header">
+                <div class="product-info">
+                  <span class="product-category" style="background: #818cf8; color: #fff;">Item de Teste</span>
+                  <h3 class="product-name">🍬 Doce (Teste R$ 1,00)</h3>
+                  <p class="product-desc">Utilizado exclusivamente para testar o fluxo de pagamento com valor reduzido.</p>
+                </div>
+                <div class="product-price">
+                  <span class="currency">R$</span>
+                  <span class="amount">1</span>
+                  <span class="cents">,00</span>
+                  <span class="unit">por unidade</span>
+                </div>
+              </div>
+              <div class="product-controls">
+                <span class="stock-info">Teste livre</span>
+                <div class="qty-selector">
+                  <button type="button" class="btn-qty" onclick="alterarDoces(-1)">−</button>
+                  <span class="qty-display" id="qtdDocesDisplay">0</span>
+                  <button type="button" class="btn-qty" onclick="alterarDoces(1)">+</button>
+                </div>
+              </div>
+            </div>
+
             <!-- PRODUTO 3: ESPAÇO KIDS -->
             <div class="product-card kids-card">
               <div class="product-header">
@@ -344,7 +369,7 @@
             <!-- Gerado dinamicamente via app.js -->
           </div>
 
-          <!-- Escolha da Forma de Pagamento (Atualizado para Mercado Pago em ambos) -->
+          <!-- Escolha da Forma de Pagamento -->
           <div class="gateway-select-container" id="gatewayContainer">
             <div class="gateway-label" id="paymentMethodLabel">
               Como deseja pagar?

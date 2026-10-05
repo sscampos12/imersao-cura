@@ -36,6 +36,7 @@ const sheetsSync = require('./lib/sheets');
 const PORT = Number(process.env.PORT || 3000);
 const PRECO_ADULTO = 40;
 const PRECO_ALMOCO = 25;
+const PRECO_DOCE = 1.00;
 const PUBLIC_DIR = path.resolve(__dirname, 'public');
 
 // Contexto temporário do checkout por navegador.
@@ -105,7 +106,6 @@ class MercadoPagoClient {
         currency_id: 'BRL',
       })),
 
-      // Preenche obrigatoriamente o e-mail e o nome para evitar que o MP peça na tela
       payer: {
         name: payer.name || 'Participante',
         email: payer.email || 'participante@inscricao.com',
@@ -426,15 +426,17 @@ function validarInscricao(body) {
 
   const qtdAdultos = quantidade(body.qtdAdultos, 'adultos');
   const qtdAlmocos = quantidade(body.qtdAlmocos, 'almoços');
+  const qtdDoces = quantidade(body.qtdDoces || 0, 'doces');
 
   const valorTotal =
     qtdAdultos * PRECO_ADULTO +
-    qtdAlmocos * PRECO_ALMOCO;
+    qtdAlmocos * PRECO_ALMOCO +
+    qtdDoces * PRECO_DOCE;
 
   if (valorTotal <= 0) {
     throw new HttpError(
       400,
-      'Selecione ao menos um ingresso ou almoço.'
+      'Selecione ao menos um ingresso ou item.'
     );
   }
 
@@ -505,6 +507,7 @@ function validarInscricao(body) {
     qtdAdultos,
     adultosNomes,
     qtdAlmocos,
+    qtdDoces,
     criancas,
     valorTotal,
   };
@@ -535,6 +538,7 @@ const server = http.createServer(async (req, res) => {
         precos: {
           adulto: PRECO_ADULTO,
           almoco: PRECO_ALMOCO,
+          doce: PRECO_DOCE,
           crianca: 0,
         },
 
@@ -594,10 +598,17 @@ const server = http.createServer(async (req, res) => {
         });
       }
 
+      if (pedido.qtdDoces > 0) {
+        items.push({
+          title: 'Doce de Teste',
+          quantity: pedido.qtdDoces,
+          unit_price: PRECO_DOCE,
+        });
+      }
+
       const rawMpNotif = process.env.MERCADO_PAGO_NOTIFICATION_URL || `${baseUrl()}/api/webhook/mercadopago`;
       const mpNotificationUrl = rawMpNotif.startsWith('https://') ? rawMpNotif : undefined;
 
-      // Se o método escolhido for pix, permitimos o meio pix na preferência do Mercado Pago
       const isPix = body.metodoPagamento === 'pix' || pedido.gateway === 'pix';
 
       const preferenceOptions = {
@@ -633,6 +644,7 @@ const server = http.createServer(async (req, res) => {
         qtdAdultos: pedido.qtdAdultos,
         adultosNomes: pedido.adultosNomes,
         qtdAlmocos: pedido.qtdAlmocos,
+        qtdDoces: pedido.qtdDoces,
         criancas: pedido.criancas,
         valorTotal: pedido.valorTotal,
         chargeId,
