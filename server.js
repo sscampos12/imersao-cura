@@ -34,7 +34,7 @@ const storage = require('./lib/storage');
 const sheetsSync = require('./lib/sheets');
 
 const PORT = Number(process.env.PORT || 3000);
-const PRECO_ADULTO = 35;
+const PRECO_ADULTO = 40;
 const PRECO_ALMOCO = 25;
 const PUBLIC_DIR = path.resolve(__dirname, 'public');
 
