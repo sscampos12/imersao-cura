@@ -3,7 +3,7 @@
  * Pagamentos integrados via Mercado Pago (Pix e Cartão de Crédito)
  */
 
-const PRECO_ADULTO = 35;
+const PRECO_ADULTO = 40;
 const PRECO_ALMOCO = 25;
 
 let checkoutBrickController = null;
