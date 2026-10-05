@@ -297,19 +297,6 @@ function syncInscricao(inscricao) {
     });
 }
 
-function syncStatus(chargeId) {
-  Promise.resolve()
-    .then(() =>
-      sheetsSync.atualizarStatus(
-        chargeId,
-        'Confirmado (pago)'
-      )
-    )
-    .catch((error) => {
-      console.error('[Planilha]', error.message);
-    });
-}
-
 function confirmarPagamentoMp(payment) {
   if (
     payment.status !== 'approved' ||
@@ -318,14 +305,32 @@ function confirmarPagamentoMp(payment) {
     return false;
   }
 
-  const inscricao = storage.getAll().find(
+  // Verifica se já foi registrado no storage para evitar duplicidade
+  const existente = storage.getAll().find(
     (item) => item.customId === payment.external_reference
   );
 
-  if (!inscricao) return false;
+  if (existente) {
+    if (existente.status !== 'Confirmado (pago)') {
+      storage.marcarComoPago(existente.chargeId);
+      sheetsSync.atualizarStatus(existente.chargeId, 'Confirmado (pago)').catch(() => {});
+    }
+    return true;
+  }
+
+  // Se não está no storage, procura na sessão temporária do navegador
+  let sessionEncontrada = null;
+  for (const session of checkoutSessions.values()) {
+    if (session.customId === payment.external_reference) {
+      sessionEncontrada = session;
+      break;
+    }
+  }
+
+  if (!sessionEncontrada) return false;
 
   const totalEsperado = Math.round(
-    Number(inscricao.valorTotal) * 100
+    Number(sessionEncontrada.pedido.valorTotal) * 100
   );
 
   const totalPago = Math.round(
@@ -337,12 +342,29 @@ function confirmarPagamentoMp(payment) {
       '[Pagamento] Valor divergente:',
       payment.id
     );
-
     return false;
   }
 
-  storage.marcarComoPago(inscricao.chargeId);
-  syncStatus(inscricao.chargeId);
+  // SÓ REGISTRA E ENVIA PARA A PLANILHA AGORA QUE O PAGAMENTO FOI APROVADO!
+  const novaInscricao = storage.addInscricao({
+    responsavel: sessionEncontrada.pedido.responsavel,
+    email: sessionEncontrada.pedido.email,
+    whatsapp: sessionEncontrada.pedido.whatsapp,
+    qtdAdultos: sessionEncontrada.pedido.qtdAdultos,
+    adultosNomes: sessionEncontrada.pedido.adultosNomes,
+    qtdAlmocos: sessionEncontrada.pedido.qtdAlmocos,
+    qtdDoces: sessionEncontrada.pedido.qtdDoces,
+    criancas: sessionEncontrada.pedido.criancas,
+    valorTotal: sessionEncontrada.pedido.valorTotal,
+    chargeId: sessionEncontrada.chargeId,
+    customId: sessionEncontrada.customId,
+    paymentUrl: sessionEncontrada.paymentUrl,
+    formaPagamento: sessionEncontrada.formaPagamento,
+    status: 'Confirmado (pago)', // Já entra pago na planilha!
+  });
+
+  syncInscricao(novaInscricao);
+  sessionEncontrada.approved = true;
 
   return true;
 }
@@ -637,29 +659,13 @@ const server = http.createServer(async (req, res) => {
         );
       }
 
-      const novaInscricao = storage.addInscricao({
-        responsavel: pedido.responsavel,
-        email: pedido.email,
-        whatsapp: pedido.whatsapp,
-        qtdAdultos: pedido.qtdAdultos,
-        adultosNomes: pedido.adultosNomes,
-        qtdAlmocos: pedido.qtdAlmocos,
-        qtdDoces: pedido.qtdDoces,
-        criancas: pedido.criancas,
-        valorTotal: pedido.valorTotal,
-        chargeId,
-        customId,
-        paymentUrl,
-        formaPagamento,
-      });
-
-      syncInscricao(novaInscricao);
-
+      // SALVA APENAS NA SESSÃO TEMPORÁRIA. NÃO VAI PARA O STORAGE NEM PARA O SHEETS AINDA!
       createCheckoutSession(req, res, {
         customId,
         chargeId,
-        valorTotal: pedido.valorTotal,
-        email: pedido.email,
+        paymentUrl,
+        formaPagamento,
+        pedido,
       });
 
       return sendJson(res, 200, {
@@ -724,12 +730,12 @@ const server = http.createServer(async (req, res) => {
           token,
           payment_method_id: paymentMethodId,
           installments,
-          transaction_amount: session.valorTotal,
+          transaction_amount: session.pedido.valorTotal,
           description: 'Inscrição — Imersão de Cura',
           external_reference: session.customId,
 
           payer: {
-            email: session.email,
+            email: session.pedido.email,
           },
         };
 
