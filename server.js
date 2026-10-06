@@ -1127,6 +1127,36 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    // Confirma um pagamento pelo número da transação do Mercado Pago.
+    if (
+      pathname === '/api/admin/confirmar' &&
+      method === 'POST'
+    ) {
+      if (!chaveAdminValida(req.headers['x-admin-key'])) {
+        throw new HttpError(401, 'Não autorizado.');
+      }
+
+      const body = await parseBody(req);
+      const paymentId = texto(body.paymentId);
+
+      if (!/^\d+$/.test(paymentId)) {
+        throw new HttpError(
+          400,
+          'Informe o número da transação do Mercado Pago.'
+        );
+      }
+
+      const payment = await mpClient.getPaymentDetails(paymentId);
+      const registrado = await confirmarPagamentoMp(payment);
+
+      return sendJson(res, 200, {
+        ok: true,
+        status: payment.status,
+        detail: payment.status_detail,
+        registrado,
+      });
+    }
+
     if (
       (
         pathname === '/api/webhook/mercadopago' ||
