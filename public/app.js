@@ -1,15 +1,24 @@
 /**
  * Frontend — Carrinho e inscrição da Imersão de Cura
- * Pagamentos integrados via Mercado Pago (Pix e Cartão de Crédito)
+ * Pagamentos via Mercado Pago: Pix (QR Code no site) e Cartão de Crédito (Brick)
  */
 
 const PRECO_ADULTO = 40;
 const PRECO_ALMOCO = 25;
-const PRECO_DOCE = 1.00;
+const PRECO_DOCE = 1.0;
+
+const CHAVE_PEDIDO = 'cura_pedido_pendente';
+const VALIDADE_PEDIDO_MS = 2 * 60 * 60 * 1000;
+const LIMITE_ACOMPANHAMENTO_MS = 30 * 60 * 1000;
 
 let checkoutBrickController = null;
 let enviandoPedido = false;
 let carregandoCheckout = false;
+
+let refPedidoAtual = null;
+let refAcompanhada = null;
+let pollTimer = null;
+let pollAtivo = false;
 
 const state = {
   qtdAdultos: 1,
@@ -33,6 +42,8 @@ const state = {
 const formatMoney = (val) =>
   `R$ ${Number(val).toFixed(2).replace('.', ',')}`;
 
+const bloqueado = () => enviandoPedido || carregandoCheckout;
+
 function totalCarrinho() {
   return (
     state.qtdAdultos * PRECO_ADULTO +
@@ -41,9 +52,10 @@ function totalCarrinho() {
   );
 }
 
-function gatewayDisponivel(gateway) {
+// Pix e cartão dependem da mesma integração (Mercado Pago).
+function gatewayDisponivel() {
   return Boolean(
-    state.disponibilidade.gatewaysDisponiveis?.[gateway] ?? true
+    state.disponibilidade.gatewaysDisponiveis?.mercadopago ?? true
   );
 }
 
@@ -54,17 +66,13 @@ function atualizarBotaoCheckout() {
 
   if (!btn) return;
 
-  const ocupado = enviandoPedido || carregandoCheckout;
+  const ocupado = bloqueado();
   const temPagamento = totalCarrinho() > 0;
   const brickAtivo =
     state.gateway === 'mercadopago' &&
     Boolean(checkoutBrickController);
 
-  btn.disabled =
-    ocupado ||
-    !temPagamento ||
-    !gatewayDisponivel(state.gateway);
-
+  btn.disabled = ocupado || !temPagamento || !gatewayDisponivel();
   btn.style.display = brickAtivo ? 'none' : '';
 
   if (spinner) {
@@ -74,11 +82,11 @@ function atualizarBotaoCheckout() {
   if (texto) {
     texto.textContent = ocupado
       ? 'Processando...'
-      : state.gateway === 'pix'
-        ? 'Finalizar Inscrição e Pagar com Pix'
-        : state.gateway === 'mercadopago'
-          ? 'Continuar para Pagamento com Cartão'
-          : 'Pagamento Indisponível';
+      : !gatewayDisponivel()
+        ? 'Pagamento Indisponível'
+        : state.gateway === 'pix'
+          ? 'Finalizar Inscrição e Pagar com Pix'
+          : 'Continuar para Pagamento com Cartão';
   }
 }
 
@@ -86,8 +94,7 @@ function bloquearSelecaoPagamento(bloquear) {
   document
     .querySelectorAll('input[name="paymentGateway"]')
     .forEach((input) => {
-      input.disabled =
-        bloquear || !gatewayDisponivel(input.value);
+      input.disabled = bloquear || !gatewayDisponivel();
     });
 }
 
@@ -115,40 +122,35 @@ async function carregarDisponibilidade() {
   }
 
   atualizarBadges();
-  configurarGateways(
-    state.disponibilidade.gatewaysDisponiveis
-  );
+  configurarGateways();
 }
 
-function configurarGateways(gw) {
+function configurarGateways() {
   const container = document.getElementById('gatewayContainer');
 
-  if (container) {
-    container.style.display = 'block';
-  }
+  if (container) container.style.display = 'block';
+
+  const opacidade = gatewayDisponivel() ? '1' : '0.45';
 
   const cardPix = document.getElementById('cardOptPix');
   const cardMp = document.getElementById('cardOptMp');
 
   if (cardPix) {
-    cardPix.style.opacity = '1';
+    cardPix.style.opacity = opacidade;
     cardPix.title = 'Pagamento via Pix';
   }
 
   if (cardMp) {
-    cardMp.style.opacity = '1';
+    cardMp.style.opacity = opacidade;
     cardMp.title = 'Cartão de crédito via Mercado Pago';
   }
 
-  bloquearSelecaoPagamento(
-    enviandoPedido || carregandoCheckout
-  );
-
+  bloquearSelecaoPagamento(bloqueado());
   trcarVisualGateway();
 }
 
 function trocarGateway(gw) {
-  if (enviandoPedido || carregandoCheckout) {
+  if (bloqueado()) {
     trcarVisualGateway();
     return;
   }
@@ -182,18 +184,16 @@ function trcarVisualGateway() {
   if (notice) {
     notice.textContent = state.gateway === 'pix'
       ? 'Pagamento via Pix pelo Mercado Pago.'
-      : state.gateway === 'mercadopago'
-        ? 'Pagamento com cartão de crédito pelo Mercado Pago.'
-        : 'Selecione uma forma de pagamento.';
+      : 'Pagamento com cartão de crédito pelo Mercado Pago.';
   }
 
-  const container = document.getElementById(
-    'paymentBrick_container'
-  );
+  const container = document.getElementById('paymentBrick_container');
 
   if (container) {
     container.style.display =
-      state.gateway === 'mercadopago' ? 'block' : 'none';
+      state.gateway === 'mercadopago' && checkoutBrickController
+        ? 'block'
+        : 'none';
   }
 
   atualizarBotaoCheckout();
@@ -206,13 +206,8 @@ function atualizarBadges() {
   const bAlmocos = document.getElementById('badgeAlmocos');
   const bKids = document.getElementById('badgeKids');
 
-  if (bAdultos) {
-    bAdultos.textContent = `${d.adultosRestantes} restantes`;
-  }
-
-  if (bAlmocos) {
-    bAlmocos.textContent = `${d.almocosRestantes} restantes`;
-  }
+  if (bAdultos) bAdultos.textContent = `${d.adultosRestantes} restantes`;
+  if (bAlmocos) bAlmocos.textContent = `${d.almocosRestantes} restantes`;
 
   if (bKids) {
     bKids.textContent =
@@ -222,8 +217,7 @@ function atualizarBadges() {
   const sAdultos = document.getElementById('stockAdultos');
 
   if (sAdultos) {
-    sAdultos.textContent =
-      `${d.adultosRestantes} de 120 vagas disponíveis`;
+    sAdultos.textContent = `${d.adultosRestantes} de 120 vagas disponíveis`;
   }
 
   const sAlmocos = document.getElementById('stockAlmocos');
@@ -235,17 +229,12 @@ function atualizarBadges() {
   }
 
   const pBebes = document.getElementById('pillBebes');
-
-  if (pBebes) {
-    pBebes.textContent =
-      `Bebês (0-2a): ${d.bebesRestantes} vagas`;
-  }
+  if (pBebes) pBebes.textContent = `Bebês (0-2a): ${d.bebesRestantes} vagas`;
 
   const pCriancas = document.getElementById('pillCriancas');
 
   if (pCriancas) {
-    pCriancas.textContent =
-      `Kids (3-11a): ${d.criancasRestantes} vagas`;
+    pCriancas.textContent = `Kids (3-11a): ${d.criancasRestantes} vagas`;
   }
 
   const btnPlusAlmoco = document.getElementById('btnPlusAlmoco');
@@ -266,7 +255,7 @@ function atualizarBadges() {
 // ---------------- CONTROLE DE ADULTOS ----------------
 
 function alterarAdultos(delta) {
-  if (enviandoPedido || carregandoCheckout) return;
+  if (bloqueado()) return;
 
   const novaQtd = state.qtdAdultos + delta;
 
@@ -342,7 +331,7 @@ function atualizarNomeAdultoExtra(idx, val) {
 // ---------------- CONTROLE DE ALMOÇOS ----------------
 
 function alterarAlmocos(delta) {
-  if (enviandoPedido || carregandoCheckout) return;
+  if (bloqueado()) return;
 
   const novaQtd = state.qtdAlmocos + delta;
 
@@ -372,7 +361,7 @@ function alterarAlmocos(delta) {
 // ---------------- CONTROLE DE DOCES (TESTE) ----------------
 
 function alterarDoces(delta) {
-  if (enviandoPedido || carregandoCheckout) return;
+  if (bloqueado()) return;
 
   const novaQtd = (state.qtdDoces || 0) + delta;
 
@@ -381,9 +370,7 @@ function alterarDoces(delta) {
   state.qtdDoces = novaQtd;
 
   const display = document.getElementById('qtdDocesDisplay');
-  if (display) {
-    display.textContent = state.qtdDoces;
-  }
+  if (display) display.textContent = state.qtdDoces;
 
   atualizarCarrinho();
 }
@@ -391,7 +378,7 @@ function alterarDoces(delta) {
 // ---------------- ESPAÇO KIDS ----------------
 
 function adicionarCrianca() {
-  if (enviandoPedido || carregandoCheckout) return;
+  if (bloqueado()) return;
 
   const vagas =
     Number(state.disponibilidade.criancasRestantes) +
@@ -405,9 +392,7 @@ function adicionarCrianca() {
   state.criancas.push({
     id: Date.now() + Math.random(),
     nome: '',
-    idade: Number(state.disponibilidade.criancasRestantes) > 0
-      ? 5
-      : 0,
+    idade: Number(state.disponibilidade.criancasRestantes) > 0 ? 5 : 0,
   });
 
   renderizarCriancas();
@@ -415,7 +400,7 @@ function adicionarCrianca() {
 }
 
 function removerCrianca(index) {
-  if (enviandoPedido || carregandoCheckout) return;
+  if (bloqueado()) return;
 
   state.criancas.splice(index, 1);
   renderizarCriancas();
@@ -452,9 +437,7 @@ function renderizarCriancas() {
           ? '1 ano'
           : `${age} anos`;
 
-      option.textContent =
-        `${idadeTexto} ${age <= 2 ? '(Bebê)' : '(Kids)'}`;
-
+      option.textContent = `${idadeTexto} ${age <= 2 ? '(Bebê)' : '(Kids)'}`;
       option.selected = c.idade === age;
       select.appendChild(option);
     }
@@ -470,9 +453,7 @@ function renderizarCriancas() {
     button.title = 'Remover';
     button.textContent = '✕';
 
-    button.addEventListener('click', () => {
-      removerCrianca(index);
-    });
+    button.addEventListener('click', () => removerCrianca(index));
 
     row.append(input, select, button);
     container.appendChild(row);
@@ -486,6 +467,9 @@ async function invalidarCheckoutCartao() {
   checkoutBrickController = null;
 
   atualizarBotaoCheckout();
+
+  const container = document.getElementById('paymentBrick_container');
+  if (container) container.style.display = 'none';
 
   if (controller) {
     try {
@@ -571,10 +555,7 @@ function atualizarCarrinho() {
         👶 <strong>${state.criancas.length}x</strong>
         Espaço Kids (0 a 11 anos)
       </span>
-      <span
-        class="badge-free"
-        style="font-size: 0.75rem; padding: 2px 6px;"
-      >
+      <span class="badge-free" style="font-size: 0.75rem; padding: 2px 6px;">
         GRÁTIS
       </span>
     `;
@@ -665,9 +646,7 @@ function validarPedido() {
   const kids = state.criancas.filter((c) => c.idade >= 3).length;
 
   if (bebes > state.disponibilidade.bebesRestantes) {
-    alert(
-      `Restam apenas ${state.disponibilidade.bebesRestantes} vagas para bebês.`
-    );
+    alert(`Restam apenas ${state.disponibilidade.bebesRestantes} vagas para bebês.`);
     return false;
   }
 
@@ -681,10 +660,318 @@ function validarPedido() {
   return true;
 }
 
+// ---------------- PEDIDO PENDENTE (sobrevive a reload) ----------------
+
+function salvarPedidoPendente(ref, pix) {
+  try {
+    localStorage.setItem(
+      CHAVE_PEDIDO,
+      JSON.stringify({ ref, pix: pix || null, criadoEm: Date.now() })
+    );
+  } catch {
+    /* armazenamento indisponível: segue sem retomar após reload */
+  }
+}
+
+function limparPedidoPendente() {
+  try {
+    localStorage.removeItem(CHAVE_PEDIDO);
+  } catch {
+    /* ignora */
+  }
+}
+
+function lerPedidoPendente() {
+  try {
+    const raw = localStorage.getItem(CHAVE_PEDIDO);
+    if (!raw) return null;
+
+    const dados = JSON.parse(raw);
+
+    if (!dados?.ref || Date.now() - dados.criadoEm > VALIDADE_PEDIDO_MS) {
+      limparPedidoPendente();
+      return null;
+    }
+
+    return dados;
+  } catch {
+    return null;
+  }
+}
+
+// ---------------- PAINEL DE PAGAMENTO / ACOMPANHAMENTO ----------------
+
+function obterPainel() {
+  let painel = document.getElementById('painelPagamento');
+
+  if (!painel) {
+    painel = document.createElement('section');
+    painel.id = 'painelPagamento';
+    painel.className = 'section-card';
+    painel.style.cssText = 'text-align:center; padding:30px 20px;';
+
+    const main = document.querySelector('.form-container');
+
+    if (main) {
+      main.style.display = 'none';
+      main.insertAdjacentElement('afterend', painel);
+    } else {
+      document.querySelector('.app-container').appendChild(painel);
+    }
+  }
+
+  return painel;
+}
+
+function definirStatusPainel(mensagem) {
+  const el = document.getElementById('statusPagamento');
+  if (el) el.textContent = mensagem;
+}
+
+function copiarTexto(texto, botao) {
+  const feedback = () => {
+    const original = botao.textContent;
+    botao.textContent = '✅ Código copiado!';
+    setTimeout(() => {
+      botao.textContent = original;
+    }, 2000);
+  };
+
+  if (navigator.clipboard?.writeText) {
+    navigator.clipboard.writeText(texto).then(feedback).catch(() => {});
+    return;
+  }
+
+  const area = document.getElementById('pixCodigo');
+
+  if (area) {
+    area.select();
+    document.execCommand('copy');
+    feedback();
+  }
+}
+
+function mostrarPainel({ ref, pix, titulo, mensagem }) {
+  const painel = obterPainel();
+
+  painel.innerHTML = `
+    <h2 id="painelTitulo" style="color:#fff; margin-bottom:8px;"></h2>
+    <p id="painelMensagem" style="color:#94a3b8; margin-bottom:16px;"></p>
+    <div id="pixQrWrap" style="margin-bottom:16px;"></div>
+    <div id="pixCodigoWrap" style="display:none; margin-bottom:16px;">
+      <textarea id="pixCodigo" readonly rows="4"
+        style="width:100%; padding:10px; border-radius:10px; background:rgba(255,255,255,0.05); color:#e2e8f0; border:1px solid rgba(255,255,255,0.1); font-size:0.8rem; resize:none;"></textarea>
+      <button type="button" class="btn-checkout" id="btnCopiarPix" style="margin-top:10px;">
+        Copiar código Pix
+      </button>
+    </div>
+    <p id="statusPagamento" style="color:#facc15; font-weight:600; margin:16px 0;">
+      ⏳ Aguardando confirmação do pagamento...
+    </p>
+    <button type="button" id="btnVerificar"
+      style="background:none; border:1px solid #818cf8; color:#818cf8; padding:10px 18px; border-radius:10px; cursor:pointer; margin-right:8px;">
+      Já paguei — verificar agora
+    </button>
+    <button type="button" id="btnRefazer"
+      style="background:none; border:none; color:#94a3b8; text-decoration:underline; cursor:pointer; padding:10px;">
+      Fazer novo pedido
+    </button>
+    <p style="color:#64748b; font-size:0.8rem; margin-top:12px;">
+      Se você já pagou, não faça um novo pedido: a confirmação chega sozinha.
+    </p>
+  `;
+
+  document.getElementById('painelTitulo').textContent = titulo;
+  document.getElementById('painelMensagem').textContent = mensagem;
+
+  if (pix?.qr_code) {
+    const wrapCodigo = document.getElementById('pixCodigoWrap');
+    const area = document.getElementById('pixCodigo');
+
+    wrapCodigo.style.display = 'block';
+    area.value = pix.qr_code;
+
+    if (
+      typeof pix.qr_code_base64 === 'string' &&
+      /^[A-Za-z0-9+/=]+$/.test(pix.qr_code_base64)
+    ) {
+      const img = document.createElement('img');
+      img.src = `data:image/png;base64,${pix.qr_code_base64}`;
+      img.alt = 'QR Code Pix';
+      img.width = 220;
+      img.height = 220;
+      img.style.cssText = 'background:#fff; padding:8px; border-radius:12px;';
+      document.getElementById('pixQrWrap').appendChild(img);
+    }
+
+    const btnCopiar = document.getElementById('btnCopiarPix');
+    btnCopiar.addEventListener('click', () => copiarTexto(pix.qr_code, btnCopiar));
+  }
+
+  document.getElementById('btnVerificar').addEventListener('click', () => {
+    definirStatusPainel('⏳ Verificando pagamento...');
+    iniciarAcompanhamento(ref);
+  });
+
+  document.getElementById('btnRefazer').addEventListener('click', () => {
+    pararAcompanhamento();
+    limparPedidoPendente();
+    window.location.reload();
+  });
+
+  painel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function mostrarSucesso() {
+  pararAcompanhamento();
+  limparPedidoPendente();
+
+  const container = document.querySelector('.app-container');
+
+  container.innerHTML = `
+    <div style="text-align:center; padding:60px 20px; color:#fff;">
+      <div style="font-size:3rem;">✅</div>
+      <h1 style="margin:16px 0 8px;">Inscrição confirmada!</h1>
+      <p style="color:#94a3b8;">
+        Pagamento aprovado. Entraremos em contato pelo WhatsApp informado.
+      </p>
+    </div>
+  `;
+}
+
+function mostrarFalha(status) {
+  pararAcompanhamento();
+  limparPedidoPendente();
+
+  definirStatusPainel(
+    status === 'cancelled'
+      ? '❌ O pagamento expirou ou foi cancelado. Faça um novo pedido.'
+      : '❌ O pagamento não foi aprovado. Faça um novo pedido.'
+  );
+}
+
+// ---------------- ACOMPANHAMENTO DO PAGAMENTO ----------------
+
+function pararAcompanhamento() {
+  pollAtivo = false;
+  clearTimeout(pollTimer);
+  pollTimer = null;
+}
+
+async function consultarStatus(ref) {
+  const res = await fetch(`/api/status?ref=${encodeURIComponent(ref)}`, {
+    cache: 'no-store',
+  });
+
+  if (!res.ok) throw new Error(`Status HTTP ${res.status}`);
+
+  return res.json();
+}
+
+function iniciarAcompanhamento(ref) {
+  pararAcompanhamento();
+
+  refAcompanhada = ref;
+  pollAtivo = true;
+
+  const inicio = Date.now();
+
+  const tick = async () => {
+    if (!pollAtivo) return;
+
+    try {
+      const dados = await consultarStatus(ref);
+
+      if (!pollAtivo) return;
+
+      if (dados.status === 'approved') {
+        mostrarSucesso();
+        return;
+      }
+
+      if (['rejected', 'cancelled'].includes(dados.status)) {
+        mostrarFalha(dados.status);
+        return;
+      }
+    } catch (erro) {
+      console.warn('Falha ao consultar o status:', erro.message);
+    }
+
+    const decorrido = Date.now() - inicio;
+
+    if (decorrido > LIMITE_ACOMPANHAMENTO_MS) {
+      pararAcompanhamento();
+      definirStatusPainel(
+        'Ainda não recebemos a confirmação. Se você já pagou, toque em "verificar agora" em alguns minutos.'
+      );
+      return;
+    }
+
+    pollTimer = setTimeout(tick, decorrido > 5 * 60 * 1000 ? 10000 : 4000);
+  };
+
+  tick();
+}
+
+function retomarPedidoPendente() {
+  const pedido = lerPedidoPendente();
+  if (!pedido) return;
+
+  refPedidoAtual = pedido.ref;
+
+  mostrarPainel({
+    ref: pedido.ref,
+    pix: pedido.pix,
+    titulo: pedido.pix ? '⚡ Pague com Pix' : 'Verificando seu pagamento',
+    mensagem: pedido.pix
+      ? 'Escaneie o QR Code ou use o Pix Copia e Cola. A confirmação aparece aqui automaticamente.'
+      : 'Estamos confirmando seu pagamento com o Mercado Pago.',
+  });
+
+  iniciarAcompanhamento(pedido.ref);
+}
+
 // ---------------- ENVIO DO PEDIDO ----------------
 
+async function gerarPix(ref) {
+  const res = await fetch('/api/process_payment', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ payment_method_id: 'pix' }),
+  });
+
+  const response = await res.json();
+
+  if (!res.ok) {
+    throw new Error(response.error || 'Não foi possível gerar o Pix.');
+  }
+
+  if (response.status === 'approved') {
+    mostrarSucesso();
+    return;
+  }
+
+  if (!response.pix?.qr_code) {
+    throw new Error(
+      'O Mercado Pago não retornou o código Pix. Tente novamente.'
+    );
+  }
+
+  salvarPedidoPendente(ref, response.pix);
+
+  mostrarPainel({
+    ref,
+    pix: response.pix,
+    titulo: '⚡ Pague com Pix',
+    mensagem:
+      'Escaneie o QR Code ou use o Pix Copia e Cola. A confirmação aparece aqui automaticamente.',
+  });
+
+  iniciarAcompanhamento(ref);
+}
+
 async function finalizarPedido() {
-  if (enviandoPedido || carregandoCheckout) return;
+  if (bloqueado()) return;
   if (!validarPedido()) return;
 
   const gatewayPedido = state.gateway;
@@ -698,10 +985,7 @@ async function finalizarPedido() {
 
   try {
     const payload = {
-      responsavel: document
-        .getElementById('nomeResponsavel')
-        .value.trim(),
-
+      responsavel: document.getElementById('nomeResponsavel').value.trim(),
       email: document.getElementById('email').value.trim(),
       whatsapp: document.getElementById('whatsapp').value.trim(),
 
@@ -721,39 +1005,35 @@ async function finalizarPedido() {
 
     const res = await fetch('/api/inscricao', {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
     });
 
     const data = await res.json();
 
     if (!res.ok || !data.ok) {
-      throw new Error(
-        data.error || 'Erro ao processar a inscrição.'
-      );
+      throw new Error(data.error || 'Erro ao processar a inscrição.');
     }
 
-    if (modal) modal.style.display = 'none';
+    if (!data.customId) {
+      throw new Error('O servidor não retornou a referência do pedido.');
+    }
 
-    if (gatewayPedido === 'mercadopago') {
+    refPedidoAtual = data.customId;
+
+    if (gatewayPedido === 'pix') {
+      await gerarPix(data.customId);
+      if (modal) modal.style.display = 'none';
+    } else {
+      if (modal) modal.style.display = 'none';
+
       if (!data.chargeId) {
         throw new Error(
           'O servidor não retornou a preferência para o pagamento com cartão.'
         );
       }
 
-      await renderizarCheckoutBricks(
-        data.chargeId,
-        data.total
-      );
-    } else if (data.paymentUrl) {
-      window.location.href = data.paymentUrl;
-    } else {
-      throw new Error(
-        'O servidor não retornou o link de pagamento.'
-      );
+      await renderizarCheckoutBricks(data.chargeId, data.total);
     }
   } catch (err) {
     console.error('Erro na inscrição:', err);
@@ -767,7 +1047,7 @@ async function finalizarPedido() {
   }
 }
 
-// ---------------- CHECKOUT MERCADO PAGO ----------------
+// ---------------- CHECKOUT MERCADO PAGO (CARTÃO) ----------------
 
 function converterTotal(valor) {
   if (typeof valor === 'number') return valor;
@@ -777,9 +1057,7 @@ function converterTotal(valor) {
     .replace(/\s/g, '');
 
   return Number(
-    texto.includes(',')
-      ? texto.replace(/\./g, '').replace(',', '.')
-      : texto
+    texto.includes(',') ? texto.replace(/\./g, '').replace(',', '.') : texto
   );
 }
 
@@ -788,9 +1066,7 @@ async function renderizarCheckoutBricks(preferenceId, total) {
   bloquearSelecaoPagamento(true);
   atualizarBotaoCheckout();
 
-  const container = document.getElementById(
-    'paymentBrick_container'
-  );
+  const container = document.getElementById('paymentBrick_container');
 
   try {
     if (!container) {
@@ -800,17 +1076,13 @@ async function renderizarCheckoutBricks(preferenceId, total) {
     const configRes = await fetch('/api/config/mp');
 
     if (!configRes.ok) {
-      throw new Error(
-        'Não foi possível carregar a configuração do Mercado Pago.'
-      );
+      throw new Error('Não foi possível carregar a configuração do Mercado Pago.');
     }
 
     const config = await configRes.json();
 
     if (!config.publicKey) {
-      throw new Error(
-        'A chave pública do Mercado Pago não está configurada.'
-      );
+      throw new Error('A chave pública do Mercado Pago não está configurada.');
     }
 
     if (typeof MercadoPago === 'undefined') {
@@ -831,10 +1103,7 @@ async function renderizarCheckoutBricks(preferenceId, total) {
     container.innerHTML = '';
     container.style.display = 'block';
 
-    const mp = new MercadoPago(config.publicKey, {
-      locale: 'pt-BR',
-    });
-
+    const mp = new MercadoPago(config.publicKey, { locale: 'pt-BR' });
     const bricksBuilder = mp.bricks();
 
     checkoutBrickController = await bricksBuilder.create(
@@ -868,9 +1137,7 @@ async function renderizarCheckoutBricks(preferenceId, total) {
             try {
               const res = await fetch('/api/process_payment', {
                 method: 'POST',
-                headers: {
-                  'Content-Type': 'application/json',
-                },
+                headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(formData),
               });
 
@@ -878,27 +1145,33 @@ async function renderizarCheckoutBricks(preferenceId, total) {
 
               if (!res.ok) {
                 throw new Error(
-                  response.error ||
-                  'Não foi possível processar o pagamento.'
+                  response.error || 'Não foi possível processar o pagamento.'
                 );
               }
 
+              const ref = response.customId || refPedidoAtual;
+
               if (response.status === 'approved') {
-                alert(
-                  'Pagamento aprovado. Aguarde a confirmação da inscrição pela organização.'
-                );
-              } else if (response.status === 'pending') {
-                alert('Pagamento pendente. Aguarde a confirmação.');
-              } else if (response.status === 'in_process') {
-                alert('Pagamento em análise. Aguarde a confirmação.');
+                setTimeout(mostrarSucesso, 300);
               } else if (response.status === 'rejected') {
                 throw new Error(
                   'Pagamento recusado. Confira os dados ou tente outro cartão.'
                 );
               } else {
-                alert(
-                  'Solicitação enviada. Verifique o status e a confirmação do pagamento.'
-                );
+                // pending, in_process ou outro: acompanha até decidir.
+                salvarPedidoPendente(ref, null);
+
+                setTimeout(() => {
+                  mostrarPainel({
+                    ref,
+                    pix: null,
+                    titulo: 'Pagamento em análise',
+                    mensagem:
+                      'Estamos aguardando a confirmação do seu cartão. Esta tela atualiza sozinha.',
+                  });
+
+                  iniciarAcompanhamento(ref);
+                }, 300);
               }
             } catch (error) {
               console.error('Erro no pagamento:', error);
@@ -935,14 +1208,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
   if (telInput) {
     telInput.addEventListener('input', (e) => {
-      let v = e.target.value.replace(/\D/g, '').slice(0, 11);
+      const v = e.target.value.replace(/\D/g, '').slice(0, 11);
 
       if (v.length > 10) {
-        e.target.value =
-          `(${v.slice(0, 2)}) ${v.slice(2, 7)}-${v.slice(7)}`;
+        e.target.value = `(${v.slice(0, 2)}) ${v.slice(2, 7)}-${v.slice(7)}`;
       } else if (v.length > 6) {
-        e.target.value =
-          `(${v.slice(0, 2)}) ${v.slice(2, 6)}-${v.slice(6)}`;
+        e.target.value = `(${v.slice(0, 2)}) ${v.slice(2, 6)}-${v.slice(6)}`;
       } else if (v.length > 2) {
         e.target.value = `(${v.slice(0, 2)}) ${v.slice(2)}`;
       } else if (v.length > 0) {
@@ -953,6 +1224,13 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
+  // Ao voltar para a aba (ex.: depois de pagar no app do banco), confere na hora.
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden && refAcompanhada && pollAtivo) {
+      iniciarAcompanhamento(refAcompanhada);
+    }
+  });
+
   document.getElementById('cardAdulto')?.classList.toggle(
     'selected',
     state.qtdAdultos > 0
@@ -962,4 +1240,5 @@ document.addEventListener('DOMContentLoaded', () => {
   atualizarCarrinho();
   trcarVisualGateway();
   carregarDisponibilidade();
+  retomarPedidoPendente();
 });
