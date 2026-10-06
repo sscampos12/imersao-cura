@@ -7,6 +7,19 @@ const PRECO_ADULTO = 40;
 const PRECO_ALMOCO = 25;
 const PRECO_DOCE = 1.0;
 
+// Acréscimo cobrado no cartão, para repassar a tarifa do Mercado Pago.
+// Precisa ser igual à TAXA_CARTAO do server.js.
+const TAXA_CARTAO = 0.05;
+
+function valorCartao(valorBase) {
+  return Math.round(Number(valorBase) * (1 + TAXA_CARTAO) * 100) / 100;
+}
+
+function totalExibido() {
+  const base = totalCarrinho();
+  return state.gateway === 'mercadopago' ? valorCartao(base) : base;
+}
+
 const CHAVE_PEDIDO = 'cura_pedido_pendente';
 const VALIDADE_PEDIDO_MS = 2 * 60 * 60 * 1000;
 const LIMITE_ACOMPANHAMENTO_MS = 30 * 60 * 1000;
@@ -137,12 +150,12 @@ function configurarGateways() {
 
   if (cardPix) {
     cardPix.style.opacity = opacidade;
-    cardPix.title = 'Pagamento via Pix';
+    cardPix.title = 'Pagamento via Pix, sem acréscimo';
   }
 
   if (cardMp) {
     cardMp.style.opacity = opacidade;
-    cardMp.title = 'Cartão de crédito via Mercado Pago';
+    cardMp.title = 'Cartão de crédito via Mercado Pago, com acréscimo de 5%';
   }
 
   bloquearSelecaoPagamento(bloqueado());
@@ -159,6 +172,8 @@ function trocarGateway(gw) {
 
   state.gateway = gw;
   trcarVisualGateway();
+  // Atualiza o total e a linha de acréscimo conforme a forma escolhida.
+  atualizarCarrinho();
 }
 
 // Nome mantido para compatibilidade com o código original.
@@ -183,8 +198,8 @@ function trcarVisualGateway() {
 
   if (notice) {
     notice.textContent = state.gateway === 'pix'
-      ? 'Pagamento via Pix pelo Mercado Pago.'
-      : 'Pagamento com cartão de crédito pelo Mercado Pago.';
+      ? 'Pix: sem acréscimo. Processado com segurança pelo Mercado Pago.'
+      : 'Cartão: acréscimo de 5% referente à tarifa de processamento. Se parcelar, o juro é seu.';
   }
 
   const container = document.getElementById('paymentBrick_container');
@@ -480,6 +495,27 @@ async function invalidarCheckoutCartao() {
   }
 }
 
+// Atualiza o texto de preço exibido dentro de cada opção de pagamento.
+function atualizarPrecosGateways() {
+  const totalBase = totalCarrinho();
+  const totalCard = valorCartao(totalBase);
+
+  const hintPix = document.querySelector('#cardOptPix .gateway-text span');
+  const hintCard = document.querySelector('#cardOptMp .gateway-text span');
+
+  if (hintPix) {
+    hintPix.textContent = totalBase > 0
+      ? `Total no Pix: ${formatMoney(totalBase)} — sem acréscimo`
+      : 'Pagamento via Mercado Pago';
+  }
+
+  if (hintCard) {
+    hintCard.textContent = totalBase > 0
+      ? `Total no cartão: ${formatMoney(totalCard)} — inclui 5% de tarifa`
+      : 'Pagamento via Mercado Pago';
+  }
+}
+
 function atualizarCarrinho() {
   if (checkoutBrickController) {
     void invalidarCheckoutCartao();
@@ -563,6 +599,26 @@ function atualizarCarrinho() {
     list.appendChild(item);
   }
 
+  // Linha do acréscimo, visível quando a forma escolhida é cartão.
+  const acrescimo =
+    state.gateway === 'mercadopago'
+      ? Math.round(
+          (valorCartao(totalCarrinho()) - totalCarrinho()) * 100
+        ) / 100
+      : 0;
+
+  if (acrescimo > 0) {
+    const item = document.createElement('div');
+    item.className = 'cart-line-item';
+
+    item.innerHTML = `
+      <span>💳 Acréscimo do cartão (5%)</span>
+      <strong>${formatMoney(acrescimo)}</strong>
+    `;
+
+    list.appendChild(item);
+  }
+
   if (totalItens === 0) {
     list.innerHTML = `
       <p style="color: #94a3b8; font-size: 0.9rem; text-align: center; padding: 12px 0;">
@@ -575,8 +631,9 @@ function atualizarCarrinho() {
     `${totalItens} ${totalItens === 1 ? 'item' : 'itens'} no carrinho`;
 
   document.getElementById('cartTotal').textContent =
-    formatMoney(totalCarrinho());
+    formatMoney(totalExibido());
 
+  atualizarPrecosGateways();
   atualizarBotaoCheckout();
 }
 
@@ -1033,6 +1090,7 @@ async function finalizarPedido() {
         );
       }
 
+      // data.total já vem do servidor com o acréscimo do cartão.
       await renderizarCheckoutBricks(data.chargeId, data.total);
     }
   } catch (err) {

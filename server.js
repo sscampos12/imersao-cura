@@ -39,6 +39,14 @@ const PRECO_ALMOCO = 25;
 const PRECO_DOCE = 1.0;
 const PUBLIC_DIR = path.resolve(__dirname, 'public');
 
+// Acréscimo aplicado só no cartão, para cobrir a tarifa do Mercado Pago.
+const TAXA_CARTAO = 0.05;
+
+// Total cobrado quando a forma de pagamento é cartão.
+function valorCartao(valorBase) {
+  return Math.round(Number(valorBase) * (1 + TAXA_CARTAO) * 100) / 100;
+}
+
 const STATUS_PENDENTE = 'Aguardando pagamento';
 const STATUS_PAGO = 'Confirmado (pago)';
 const REF_REGEX = /^cura_[0-9a-f-]{36}$/i;
@@ -511,12 +519,16 @@ async function confirmarPagamentoMp(payment) {
   }
 
   if (validarValor) {
-    const esperado = Math.round(Number(pedido.valorTotal) * 100);
+    // Aceita o valor do Pix (base) ou o do cartão (base + 5%).
+    const esperados = [
+      Math.round(Number(pedido.valorTotal) * 100),
+      Math.round(valorCartao(pedido.valorTotal) * 100),
+    ];
     const pago = Math.round(Number(payment.transaction_amount) * 100);
 
-    if (esperado !== pago) {
+    if (!esperados.includes(pago)) {
       console.error(
-        `[Pagamento] Valor divergente. Pedido: ${esperado}, pago: ${pago}, id: ${payment.id}`
+        `[Pagamento] Valor divergente. Esperado: ${esperados.join('/')}, pago: ${pago}, id: ${payment.id}`
       );
 
       return false;
@@ -525,6 +537,8 @@ async function confirmarPagamentoMp(payment) {
 
   const novaInscricao = storage.addInscricao({
     ...pedido,
+    // Grava o valor realmente cobrado (com a taxa, no caso do cartão).
+    valorTotal: Number(payment.transaction_amount || pedido.valorTotal),
     chargeId,
     customId: ref,
     paymentId: String(payment.id),
@@ -873,6 +887,13 @@ const server = http.createServer(async (req, res) => {
       const pedido = validarInscricao(body);
       const customId = `cura_${crypto.randomUUID()}`;
 
+      // Forma de pagamento escolhida na tela: Pix (base) ou cartão (+5%).
+      const metodo = texto(body.metodoPagamento);
+      const ehCartao = metodo === 'mercadopago';
+      const valorCobrado = ehCartao
+        ? valorCartao(pedido.valorTotal)
+        : pedido.valorTotal;
+
       if (
         !mpClient.accessToken ||
         !texto(process.env.MERCADO_PAGO_PUBLIC_KEY)
@@ -907,6 +928,19 @@ const server = http.createServer(async (req, res) => {
           quantity: pedido.qtdDoces,
           unit_price: PRECO_DOCE,
         });
+      }
+
+      if (ehCartao) {
+        const acrescimo =
+          Math.round((valorCobrado - pedido.valorTotal) * 100) / 100;
+
+        if (acrescimo > 0) {
+          items.push({
+            title: 'Tarifa do cartão (5%)',
+            quantity: 1,
+            unit_price: acrescimo,
+          });
+        }
       }
 
       const metaPedido = montarMetaPedido(pedido);
@@ -945,6 +979,8 @@ const server = http.createServer(async (req, res) => {
         formaPagamento: 'Mercado Pago',
         metaPedido,
         pedido,
+        valorCobrado,
+        metodoPagamento: metodo,
       });
 
       // Registra na planilha como pendente, sem ocupar vagas.
@@ -966,7 +1002,8 @@ const server = http.createServer(async (req, res) => {
         paymentUrl,
         chargeId,
         customId,
-        total: pedido.valorTotal,
+        total: valorCobrado,
+        totalPix: pedido.valorTotal,
       });
     }
 
@@ -1021,7 +1058,8 @@ const server = http.createServer(async (req, res) => {
       try {
         const payload = {
           payment_method_id: paymentMethodId,
-          transaction_amount: session.pedido.valorTotal,
+          transaction_amount:
+            Number(session.valorCobrado) || session.pedido.valorTotal,
           description: 'Inscrição — Imersão de Cura',
           external_reference: session.customId,
 
