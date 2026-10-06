@@ -36,12 +36,19 @@ const sheetsSync = require('./lib/sheets');
 const PORT = Number(process.env.PORT || 3000);
 const PRECO_ADULTO = 40;
 const PRECO_ALMOCO = 25;
-const PRECO_DOCE = 1.00;
+const PRECO_DOCE = 1.0;
 const PUBLIC_DIR = path.resolve(__dirname, 'public');
 
-// Contexto temporário do checkout por navegador.
+const STATUS_PAGO = 'Confirmado (pago)';
+const REF_REGEX = /^cura_[0-9a-f-]{36}$/i;
+
+// Contexto temporário do checkout (memória). Some se o Render reiniciar.
 const checkoutSessions = new Map();
 const SESSION_DURATION = 60 * 60 * 1000;
+
+// Cache curto para não consultar o Mercado Pago a cada requisição de status.
+const statusCache = new Map();
+const STATUS_CACHE_MS = 3000;
 
 class HttpError extends Error {
   constructor(statusCode, message) {
@@ -121,6 +128,11 @@ class MercadoPagoClient {
       };
     }
 
+    // Dados compactos do pedido, para recuperar após reinício do servidor.
+    if (metadata.orderMetadata) {
+      payload.metadata = metadata.orderMetadata;
+    }
+
     const notificationUrl =
       metadata.notificationUrl || this.notificationUrl;
 
@@ -172,6 +184,18 @@ class MercadoPagoClient {
     return this.request(
       `/v1/payments/${encodeURIComponent(paymentId)}`
     );
+  }
+
+  async searchPaymentsByReference(externalReference) {
+    const qs = new URLSearchParams({
+      external_reference: externalReference,
+      sort: 'date_created',
+      criteria: 'desc',
+      limit: '10',
+    });
+
+    const data = await this.request(`/v1/payments/search?${qs}`);
+    return data.results || [];
   }
 }
 
@@ -230,7 +254,10 @@ function parseBody(req) {
         resolve(data);
       } catch {
         reject(
-          new HttpError(400, 'O corpo da requisição deve ser JSON válido.')
+          new HttpError(
+            400,
+            'O corpo da requisição deve ser JSON válido.'
+          )
         );
       }
     });
@@ -289,6 +316,14 @@ function quantidade(value, campo) {
   return number;
 }
 
+function calcularTotal(qtdAdultos, qtdAlmocos, qtdDoces) {
+  return (
+    qtdAdultos * PRECO_ADULTO +
+    qtdAlmocos * PRECO_ALMOCO +
+    qtdDoces * PRECO_DOCE
+  );
+}
+
 function syncInscricao(inscricao) {
   Promise.resolve()
     .then(() => sheetsSync.sincronizarInscricao(inscricao))
@@ -297,86 +332,211 @@ function syncInscricao(inscricao) {
     });
 }
 
+function syncStatus(chargeId) {
+  Promise.resolve()
+    .then(() => sheetsSync.atualizarStatus(chargeId, STATUS_PAGO))
+    .catch((error) => {
+      console.error('[Planilha]', error.message);
+    });
+}
+
+// ---------------- DADOS DO PEDIDO NO MERCADO PAGO ----------------
+
+// Guarda os dados essenciais no próprio pagamento. Se o Render reiniciar
+// e apagar a memória, o pedido ainda pode ser reconstruído.
+function montarMetaPedido(pedido) {
+  const json = JSON.stringify({
+    r: pedido.responsavel,
+    e: pedido.email,
+    w: pedido.whatsapp,
+    a: pedido.qtdAdultos,
+    an: pedido.adultosNomes,
+    l: pedido.qtdAlmocos,
+    d: pedido.qtdDoces,
+    c: pedido.criancas.map((c) => [c.nome, c.idade]),
+  });
+
+  if (json.length > 1500) {
+    console.warn(
+      '[Pedido] Dados grandes demais para o metadata do Mercado Pago.'
+    );
+    return null;
+  }
+
+  return json;
+}
+
+function lerMetaPedido(payment) {
+  const raw = payment?.metadata?.pedido;
+  if (typeof raw !== 'string') return null;
+
+  try {
+    const m = JSON.parse(raw);
+
+    const qtdAdultos = Number(m.a) || 0;
+    const qtdAlmocos = Number(m.l) || 0;
+    const qtdDoces = Number(m.d) || 0;
+
+    return {
+      responsavel: texto(m.r),
+      email: texto(m.e),
+      whatsapp: texto(m.w),
+      qtdAdultos,
+      adultosNomes: Array.isArray(m.an) ? m.an.map(texto) : [],
+      qtdAlmocos,
+      qtdDoces,
+      criancas: Array.isArray(m.c)
+        ? m.c.map(([nome, idade]) => ({
+            nome: texto(nome),
+            idade: Number(idade),
+          }))
+        : [],
+      valorTotal: calcularTotal(qtdAdultos, qtdAlmocos, qtdDoces),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function descreverFormaPagamento(payment) {
+  if (payment.payment_method_id === 'pix') {
+    return 'Mercado Pago (Pix)';
+  }
+
+  if (payment.payment_type_id === 'credit_card') {
+    return 'Mercado Pago (Cartão de crédito)';
+  }
+
+  if (payment.payment_type_id === 'debit_card') {
+    return 'Mercado Pago (Cartão de débito)';
+  }
+
+  return 'Mercado Pago';
+}
+
+function encontrarSessaoPorRef(ref) {
+  for (const [id, session] of checkoutSessions) {
+    if (session.customId === ref) return { id, session };
+  }
+
+  return null;
+}
+
+// ---------------- CONFIRMAÇÃO DO PAGAMENTO ----------------
+
+// Pode ser chamada várias vezes (cartão, webhook, consulta de status).
+// Não há "await" entre a verificação e o registro, então no mesmo
+// processo ela não cria duas inscrições para o mesmo pagamento.
 async function confirmarPagamentoMp(payment) {
   if (
+    !payment ||
     payment.status !== 'approved' ||
-    !payment.external_reference
+    payment.currency_id !== 'BRL' ||
+    !REF_REGEX.test(String(payment.external_reference || ''))
   ) {
     return false;
   }
 
-  // Verifica se já foi registrado no storage para evitar duplicidade
-  const existente = storage.getAll().find(
-    (item) => item.customId === payment.external_reference
-  );
+  const ref = payment.external_reference;
+
+  const existente = storage
+    .getAll()
+    .find((item) => item.customId === ref);
 
   if (existente) {
-    if (existente.status !== 'Confirmado (pago)') {
+    if (existente.status !== STATUS_PAGO) {
       storage.marcarComoPago(existente.chargeId);
-      sheetsSync.atualizarStatus(existente.chargeId, 'Confirmado (pago)').catch(() => {});
+      syncStatus(existente.chargeId);
     }
+
     return true;
   }
 
-  // Procura na sessão temporária do navegador
-  let sessionEncontrada = null;
-  for (const session of checkoutSessions.values()) {
-    if (session.customId === payment.external_reference) {
-      sessionEncontrada = session;
-      break;
+  const encontrada = encontrarSessaoPorRef(ref);
+
+  let pedido;
+  let chargeId;
+  let paymentUrl = '';
+  let observacao = '';
+  let validarValor = true;
+
+  if (encontrada) {
+    pedido = encontrada.session.pedido;
+    chargeId = encontrada.session.chargeId;
+    paymentUrl = encontrada.session.paymentUrl || '';
+  } else {
+    const meta = lerMetaPedido(payment);
+    chargeId = String(payment.id);
+
+    if (meta && meta.responsavel && meta.email) {
+      console.log(`[Pedido] Recuperado pelo metadata: ${ref}`);
+      pedido = meta;
+    } else {
+      console.warn(`[Pedido] Sem dados completos para ${ref}.`);
+
+      validarValor = false;
+      observacao =
+        'Dados reconstruídos pelo pagador do Mercado Pago. Conferir manualmente.';
+
+      pedido = {
+        responsavel:
+          [payment.payer?.first_name, payment.payer?.last_name]
+            .filter(Boolean)
+            .join(' ') || 'Participante',
+
+        email: payment.payer?.email || '',
+
+        whatsapp: [
+          payment.payer?.phone?.area_code,
+          payment.payer?.phone?.number,
+        ]
+          .filter(Boolean)
+          .join(''),
+
+        qtdAdultos: 0,
+        adultosNomes: [],
+        qtdAlmocos: 0,
+        qtdDoces: 0,
+        criancas: [],
+        valorTotal: Number(payment.transaction_amount || 0),
+      };
     }
   }
 
-  let pedidoParaSalvar;
+  if (validarValor) {
+    const esperado = Math.round(Number(pedido.valorTotal) * 100);
+    const pago = Math.round(Number(payment.transaction_amount) * 100);
 
-  if (!sessionEncontrada) {
-    console.log(`Sessão temporária não encontrada na memória para ref: ${payment.external_reference}. Criando registo via dados do pagamento do MP.`);
-    
-    // Fallback caso o servidor tenha reiniciado: reconstrói os dados básicos com base no pagador do MP
-    pedidoParaSalvar = {
-      responsavel: payment.payer?.first_name ? `${payment.payer.first_name} ${payment.payer.last_name || ''}` : 'Participante',
-      email: payment.payer?.email || 'participante@inscricao.com',
-      whatsapp: payment.payer?.phone?.number || '',
-      qtdAdultos: 1,
-      adultosNomes: [],
-      qtdAlmocos: 0,
-      qtdDoces: 0,
-      criancas: [],
-      valorTotal: Number(payment.transaction_amount || 0),
-      chargeId: payment.id ? String(payment.id) : 'mp_pago',
-      customId: payment.external_reference,
-      paymentUrl: '',
-      formaPagamento: 'Mercado Pago (Aprovado)',
-    };
-  } else {
-    pedidoParaSalvar = {
-      responsavel: sessionEncontrada.pedido.responsavel,
-      email: sessionEncontrada.pedido.email,
-      whatsapp: sessionEncontrada.pedido.whatsapp,
-      qtdAdultos: sessionEncontrada.pedido.qtdAdultos,
-      adultosNomes: sessionEncontrada.pedido.adultosNomes,
-      qtdAlmocos: sessionEncontrada.pedido.qtdAlmocos,
-      qtdDoces: sessionEncontrada.pedido.qtdDoces,
-      criancas: sessionEncontrada.pedido.criancas,
-      valorTotal: sessionEncontrada.pedido.valorTotal,
-      chargeId: sessionEncontrada.chargeId,
-      customId: sessionEncontrada.customId,
-      paymentUrl: sessionEncontrada.paymentUrl,
-      formaPagamento: sessionEncontrada.formaPagamento,
-    };
-    sessionEncontrada.approved = true;
-    checkoutSessions.delete(sessionEncontrada.customId);
+    if (esperado !== pago) {
+      console.error(
+        `[Pagamento] Valor divergente. Pedido: ${esperado}, pago: ${pago}, id: ${payment.id}`
+      );
+
+      return false;
+    }
   }
 
-  // SÓ REGISTRA E ENVIA PARA A PLANILHA AGORA QUE O PAGAMENTO FOI APROVADO!
   const novaInscricao = storage.addInscricao({
-    ...pedidoParaSalvar,
-    status: 'Confirmado (pago)',
+    ...pedido,
+    chargeId,
+    customId: ref,
+    paymentId: String(payment.id),
+    paymentUrl,
+    formaPagamento: descreverFormaPagamento(payment),
+    observacao,
+    status: STATUS_PAGO,
   });
+
+  if (encontrada) {
+    encontrada.session.approved = true;
+    checkoutSessions.delete(encontrada.id);
+  }
 
   syncInscricao(novaInscricao);
   return true;
 }
+
+// ---------------- SESSÃO DO CHECKOUT ----------------
 
 function getCheckoutSession(req) {
   const cookies = String(req.headers.cookie || '')
@@ -414,6 +574,7 @@ function createCheckoutSession(req, res, data) {
 
   const secure =
     Boolean(req.socket.encrypted) ||
+    req.headers['x-forwarded-proto'] === 'https' ||
     process.env.PUBLIC_BASE_URL?.startsWith('https://');
 
   res.setHeader(
@@ -428,6 +589,17 @@ function baseUrl() {
     `http://localhost:${PORT}`
   ).replace(/\/+$/, '');
 }
+
+function notificationUrlMp() {
+  const raw = (
+    process.env.MERCADO_PAGO_NOTIFICATION_URL ||
+    `${baseUrl()}/api/webhook/mercadopago`
+  ).trim();
+
+  return raw.startsWith('https://') ? raw : undefined;
+}
+
+// ---------------- VALIDAÇÃO DA INSCRIÇÃO ----------------
 
 function validarInscricao(body) {
   const responsavel = texto(body.responsavel);
@@ -447,22 +619,15 @@ function validarInscricao(body) {
     );
   }
 
-  let gateway = body.gateway;
-
-  if (!gateway) {
-    gateway = body.metodoPagamento === 'pix' || body.metodoPagamento === 'cartao'
-      ? 'mercadopago'
-      : 'mercadopago';
-  }
-
   const qtdAdultos = quantidade(body.qtdAdultos, 'adultos');
   const qtdAlmocos = quantidade(body.qtdAlmocos, 'almoços');
   const qtdDoces = quantidade(body.qtdDoces || 0, 'doces');
 
-  const valorTotal =
-    qtdAdultos * PRECO_ADULTO +
-    qtdAlmocos * PRECO_ALMOCO +
-    qtdDoces * PRECO_DOCE;
+  const valorTotal = calcularTotal(
+    qtdAdultos,
+    qtdAlmocos,
+    qtdDoces
+  );
 
   if (valorTotal <= 0) {
     throw new HttpError(
@@ -534,7 +699,7 @@ function validarInscricao(body) {
     responsavel,
     email,
     whatsapp,
-    gateway,
+    gateway: 'mercadopago',
     qtdAdultos,
     adultosNomes,
     qtdAlmocos,
@@ -543,6 +708,37 @@ function validarInscricao(body) {
     valorTotal,
   };
 }
+
+// ---------------- WEBHOOK ----------------
+
+async function processarWebhookMp(body, query) {
+  const topic =
+    body.type ||
+    body.topic ||
+    query.type ||
+    query.topic;
+
+  // Outros tópicos (ex.: merchant_order) não trazem o id do pagamento.
+  if (topic && topic !== 'payment') return;
+
+  let paymentId =
+    body.data?.id ||
+    query['data.id'] ||
+    (topic === 'payment' ? body.id || query.id : null);
+
+  if (!paymentId && topic === 'payment' && body.resource) {
+    const parts = String(body.resource).split('/');
+    paymentId = parts[parts.length - 1];
+  }
+
+  if (!paymentId || !/^\d+$/.test(String(paymentId))) return;
+
+  // Consulta o Mercado Pago antes de confirmar qualquer coisa.
+  const payment = await mpClient.getPaymentDetails(paymentId);
+  await confirmarPagamentoMp(payment);
+}
+
+// ---------------- SERVIDOR ----------------
 
 const server = http.createServer(async (req, res) => {
   const parsedUrl = url.parse(req.url, true);
@@ -558,6 +754,10 @@ const server = http.createServer(async (req, res) => {
   }
 
   try {
+    if (pathname === '/health' && ['GET', 'HEAD'].includes(method)) {
+      return sendJson(res, 200, { ok: true });
+    }
+
     if (
       pathname === '/api/disponibilidade' &&
       method === 'GET'
@@ -591,6 +791,57 @@ const server = http.createServer(async (req, res) => {
         ok: true,
         publicKey: process.env.MERCADO_PAGO_PUBLIC_KEY || '',
       });
+    }
+
+    // Consulta ativa: não depende do webhook chegar.
+    if (
+      pathname === '/api/status' &&
+      method === 'GET'
+    ) {
+      const ref = texto(parsedUrl.query.ref);
+
+      if (!REF_REGEX.test(ref)) {
+        throw new HttpError(400, 'Referência inválida.');
+      }
+
+      const cached = statusCache.get(ref);
+
+      if (cached && Date.now() - cached.at < STATUS_CACHE_MS) {
+        return sendJson(res, 200, cached.payload);
+      }
+
+      const jaConfirmada = storage
+        .getAll()
+        .find(
+          (item) =>
+            item.customId === ref && item.status === STATUS_PAGO
+        );
+
+      let payload;
+
+      if (jaConfirmada) {
+        payload = { ok: true, status: 'approved', detail: null };
+      } else {
+        const payments =
+          await mpClient.searchPaymentsByReference(ref);
+
+        const aprovado = payments.find(
+          (p) => p.status === 'approved'
+        );
+
+        if (aprovado) await confirmarPagamentoMp(aprovado);
+
+        const atual = aprovado || payments[0];
+
+        payload = {
+          ok: true,
+          status: atual?.status || 'pending',
+          detail: atual?.status_detail || null,
+        };
+      }
+
+      statusCache.set(ref, { at: Date.now(), payload });
+      return sendJson(res, 200, payload);
     }
 
     if (
@@ -637,16 +888,7 @@ const server = http.createServer(async (req, res) => {
         });
       }
 
-      const rawMpNotif = process.env.MERCADO_PAGO_NOTIFICATION_URL || `${baseUrl()}/api/webhook/mercadopago`;
-      const mpNotificationUrl = rawMpNotif.startsWith('https://') ? rawMpNotif : undefined;
-
-      const isPix = body.metodoPagamento === 'pix' || pedido.gateway === 'pix';
-
-      const preferenceOptions = {
-        externalReference: customId,
-        notificationUrl: mpNotificationUrl,
-        backUrl: `${baseUrl()}/inscricao.html`,
-      };
+      const metaPedido = montarMetaPedido(pedido);
 
       const result = await mpClient.createPreference(
         items,
@@ -655,12 +897,18 @@ const server = http.createServer(async (req, res) => {
           email: pedido.email,
           phone: pedido.whatsapp,
         },
-        preferenceOptions
+        {
+          externalReference: customId,
+          notificationUrl: notificationUrlMp(),
+          backUrl: `${baseUrl()}/inscricao.html`,
+          orderMetadata: metaPedido
+            ? { pedido: metaPedido }
+            : undefined,
+        }
       );
 
       const paymentUrl = result.initPoint;
       const chargeId = result.preferenceId;
-      const formaPagamento = isPix ? 'Mercado Pago (Pix)' : 'Mercado Pago (Cartão)';
 
       if (!chargeId || !paymentUrl) {
         throw new Error(
@@ -668,12 +916,13 @@ const server = http.createServer(async (req, res) => {
         );
       }
 
-      // SALVA APENAS NA SESSÃO TEMPORÁRIA. NÃO VAI PARA O STORAGE NEM PARA O SHEETS AINDA!
+      // Só vai para o storage e para a planilha quando o pagamento for aprovado.
       createCheckoutSession(req, res, {
         customId,
         chargeId,
         paymentUrl,
-        formaPagamento,
+        formaPagamento: 'Mercado Pago',
+        metaPedido,
         pedido,
       });
 
@@ -716,19 +965,19 @@ const server = http.createServer(async (req, res) => {
       const body = await parseBody(req);
       const token = texto(body.token);
       const paymentMethodId = texto(body.payment_method_id);
-      const installments = Number(body.installments || 1);
+      const ehPix = paymentMethodId === 'pix';
+      const installments = ehPix ? 1 : Number(body.installments || 1);
 
       if (
-        !token ||
-        token.length > 500 ||
         !paymentMethodId ||
+        (!ehPix && (!token || token.length > 500)) ||
         !Number.isInteger(installments) ||
         installments < 1 ||
         installments > 12
       ) {
         throw new HttpError(
           400,
-          'Confira os dados do cartão e o parcelamento.'
+          'Confira os dados do pagamento.'
         );
       }
 
@@ -736,9 +985,7 @@ const server = http.createServer(async (req, res) => {
 
       try {
         const payload = {
-          token,
           payment_method_id: paymentMethodId,
-          installments,
           transaction_amount: session.pedido.valorTotal,
           description: 'Inscrição — Imersão de Cura',
           external_reference: session.customId,
@@ -747,6 +994,15 @@ const server = http.createServer(async (req, res) => {
             email: session.pedido.email,
           },
         };
+
+        if (!ehPix) {
+          payload.token = token;
+          payload.installments = installments;
+        }
+
+        if (session.metaPedido) {
+          payload.metadata = { pedido: session.metaPedido };
+        }
 
         if (body.issuer_id) {
           payload.issuer_id = String(body.issuer_id);
@@ -765,14 +1021,18 @@ const server = http.createServer(async (req, res) => {
           };
         }
 
-        const rawMpNotif = process.env.MERCADO_PAGO_NOTIFICATION_URL || `${baseUrl()}/api/webhook/mercadopago`;
-        if (rawMpNotif.startsWith('https://')) {
-          payload.notification_url = rawMpNotif;
+        const notificationUrl = notificationUrlMp();
+
+        if (notificationUrl) {
+          payload.notification_url = notificationUrl;
         }
 
+        // Pix usa chave fixa: clicar duas vezes devolve o mesmo QR Code.
         const idempotencyKey = crypto
           .createHash('sha256')
-          .update(`${session.customId}:${token}`)
+          .update(
+            `${session.customId}:${ehPix ? 'pix' : token}`
+          )
           .digest('hex');
 
         const payment = await mpClient.createCardPayment(
@@ -781,15 +1041,26 @@ const server = http.createServer(async (req, res) => {
         );
 
         if (payment.status === 'approved') {
-          session.approved = true;
           await confirmarPagamentoMp(payment);
         }
+
+        const dadosPix =
+          payment.point_of_interaction?.transaction_data;
 
         return sendJson(res, 200, {
           success: payment.status === 'approved',
           id: payment.id,
           status: payment.status,
           status_detail: payment.status_detail,
+          customId: session.customId,
+
+          pix: dadosPix
+            ? {
+                qr_code: dadosPix.qr_code,
+                qr_code_base64: dadosPix.qr_code_base64,
+                ticket_url: dadosPix.ticket_url,
+              }
+            : undefined,
         });
       } finally {
         session.processing = false;
@@ -804,40 +1075,15 @@ const server = http.createServer(async (req, res) => {
       method === 'POST'
     ) {
       const body = await parseBody(req);
-      console.log("Webhook do Mercado Pago recebido:", JSON.stringify(body));
 
-      const topic =
-        body.type ||
-        body.topic ||
-        parsedUrl.query.type ||
-        parsedUrl.query.topic;
+      // Responde na hora (o Mercado Pago espera poucos segundos).
+      sendJson(res, 200, { ok: true });
 
-      let paymentId =
-        body.data?.id ||
-        parsedUrl.query['data.id'] ||
-        (
-          topic === 'payment'
-            ? body.id || parsedUrl.query.id
-            : null
-        );
+      processarWebhookMp(body, parsedUrl.query).catch((error) => {
+        console.error('[Webhook MP]', error.message);
+      });
 
-      if (!paymentId && body.resource) {
-        const parts = body.resource.split('/');
-        paymentId = parts[parts.length - 1];
-      }
-
-      if (
-        paymentId &&
-        (!topic || topic === 'payment' || topic === 'merchant_order') &&
-        /^\d+$/.test(String(paymentId))
-      ) {
-        const payment =
-          await mpClient.getPaymentDetails(paymentId);
-
-        await confirmarPagamentoMp(payment);
-      }
-
-      return sendJson(res, 200, { ok: true });
+      return;
     }
 
     if (pathname.startsWith('/api/')) {
@@ -899,6 +1145,10 @@ const cleanupTimer = setInterval(() => {
     if (session.expiresAt < now && !session.processing) {
       checkoutSessions.delete(id);
     }
+  }
+
+  for (const [ref, entry] of statusCache) {
+    if (now - entry.at > 60 * 1000) statusCache.delete(ref);
   }
 }, 60 * 1000);
 
