@@ -297,7 +297,7 @@ function syncInscricao(inscricao) {
     });
 }
 
-function confirmarPagamentoMp(payment) {
+async function confirmarPagamentoMp(payment) {
   if (
     payment.status !== 'approved' ||
     !payment.external_reference
@@ -318,7 +318,7 @@ function confirmarPagamentoMp(payment) {
     return true;
   }
 
-  // Se não está no storage, procura na sessão temporária do navegador
+  // Procura na sessão temporária do navegador
   let sessionEncontrada = null;
   for (const session of checkoutSessions.values()) {
     if (session.customId === payment.external_reference) {
@@ -327,45 +327,54 @@ function confirmarPagamentoMp(payment) {
     }
   }
 
-  if (!sessionEncontrada) return false;
+  let pedidoParaSalvar;
 
-  const totalEsperado = Math.round(
-    Number(sessionEncontrada.pedido.valorTotal) * 100
-  );
-
-  const totalPago = Math.round(
-    Number(payment.transaction_amount) * 100
-  );
-
-  if (totalEsperado !== totalPago) {
-    console.error(
-      '[Pagamento] Valor divergente:',
-      payment.id
-    );
-    return false;
+  if (!sessionEncontrada) {
+    console.log(`Sessão temporária não encontrada na memória para ref: ${payment.external_reference}. Criando registo via dados do pagamento do MP.`);
+    
+    // Fallback caso o servidor tenha reiniciado: reconstrói os dados básicos com base no pagador do MP
+    pedidoParaSalvar = {
+      responsavel: payment.payer?.first_name ? `${payment.payer.first_name} ${payment.payer.last_name || ''}` : 'Participante',
+      email: payment.payer?.email || 'participante@inscricao.com',
+      whatsapp: payment.payer?.phone?.number || '',
+      qtdAdultos: 1,
+      adultosNomes: [],
+      qtdAlmocos: 0,
+      qtdDoces: 0,
+      criancas: [],
+      valorTotal: Number(payment.transaction_amount || 0),
+      chargeId: payment.id ? String(payment.id) : 'mp_pago',
+      customId: payment.external_reference,
+      paymentUrl: '',
+      formaPagamento: 'Mercado Pago (Aprovado)',
+    };
+  } else {
+    pedidoParaSalvar = {
+      responsavel: sessionEncontrada.pedido.responsavel,
+      email: sessionEncontrada.pedido.email,
+      whatsapp: sessionEncontrada.pedido.whatsapp,
+      qtdAdultos: sessionEncontrada.pedido.qtdAdultos,
+      adultosNomes: sessionEncontrada.pedido.adultosNomes,
+      qtdAlmocos: sessionEncontrada.pedido.qtdAlmocos,
+      qtdDoces: sessionEncontrada.pedido.qtdDoces,
+      criancas: sessionEncontrada.pedido.criancas,
+      valorTotal: sessionEncontrada.pedido.valorTotal,
+      chargeId: sessionEncontrada.chargeId,
+      customId: sessionEncontrada.customId,
+      paymentUrl: sessionEncontrada.paymentUrl,
+      formaPagamento: sessionEncontrada.formaPagamento,
+    };
+    sessionEncontrada.approved = true;
+    checkoutSessions.delete(sessionEncontrada.customId);
   }
 
   // SÓ REGISTRA E ENVIA PARA A PLANILHA AGORA QUE O PAGAMENTO FOI APROVADO!
   const novaInscricao = storage.addInscricao({
-    responsavel: sessionEncontrada.pedido.responsavel,
-    email: sessionEncontrada.pedido.email,
-    whatsapp: sessionEncontrada.pedido.whatsapp,
-    qtdAdultos: sessionEncontrada.pedido.qtdAdultos,
-    adultosNomes: sessionEncontrada.pedido.adultosNomes,
-    qtdAlmocos: sessionEncontrada.pedido.qtdAlmocos,
-    qtdDoces: sessionEncontrada.pedido.qtdDoces,
-    criancas: sessionEncontrada.pedido.criancas,
-    valorTotal: sessionEncontrada.pedido.valorTotal,
-    chargeId: sessionEncontrada.chargeId,
-    customId: sessionEncontrada.customId,
-    paymentUrl: sessionEncontrada.paymentUrl,
-    formaPagamento: sessionEncontrada.formaPagamento,
-    status: 'Confirmado (pago)', // Já entra pago na planilha!
+    ...pedidoParaSalvar,
+    status: 'Confirmado (pago)',
   });
 
   syncInscricao(novaInscricao);
-  sessionEncontrada.approved = true;
-
   return true;
 }
 
@@ -773,7 +782,7 @@ const server = http.createServer(async (req, res) => {
 
         if (payment.status === 'approved') {
           session.approved = true;
-          confirmarPagamentoMp(payment);
+          await confirmarPagamentoMp(payment);
         }
 
         return sendJson(res, 200, {
@@ -795,6 +804,7 @@ const server = http.createServer(async (req, res) => {
       method === 'POST'
     ) {
       const body = await parseBody(req);
+      console.log("Webhook do Mercado Pago recebido:", JSON.stringify(body));
 
       const topic =
         body.type ||
@@ -802,7 +812,7 @@ const server = http.createServer(async (req, res) => {
         parsedUrl.query.type ||
         parsedUrl.query.topic;
 
-      const paymentId =
+      let paymentId =
         body.data?.id ||
         parsedUrl.query['data.id'] ||
         (
@@ -811,15 +821,20 @@ const server = http.createServer(async (req, res) => {
             : null
         );
 
+      if (!paymentId && body.resource) {
+        const parts = body.resource.split('/');
+        paymentId = parts[parts.length - 1];
+      }
+
       if (
         paymentId &&
-        (!topic || topic === 'payment') &&
+        (!topic || topic === 'payment' || topic === 'merchant_order') &&
         /^\d+$/.test(String(paymentId))
       ) {
         const payment =
           await mpClient.getPaymentDetails(paymentId);
 
-        confirmarPagamentoMp(payment);
+        await confirmarPagamentoMp(payment);
       }
 
       return sendJson(res, 200, { ok: true });
