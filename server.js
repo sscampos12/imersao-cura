@@ -39,6 +39,7 @@ const PRECO_ALMOCO = 25;
 const PRECO_DOCE = 1.0;
 const PUBLIC_DIR = path.resolve(__dirname, 'public');
 
+const STATUS_PENDENTE = 'Aguardando pagamento';
 const STATUS_PAGO = 'Confirmado (pago)';
 const REF_REGEX = /^cura_[0-9a-f-]{36}$/i;
 
@@ -324,6 +325,12 @@ function calcularTotal(qtdAdultos, qtdAlmocos, qtdDoces) {
   );
 }
 
+function dataHoraBr() {
+  return new Date().toLocaleString('pt-BR', {
+    timeZone: 'America/Sao_Paulo',
+  });
+}
+
 function syncInscricao(inscricao) {
   Promise.resolve()
     .then(() => sheetsSync.sincronizarInscricao(inscricao))
@@ -532,6 +539,7 @@ async function confirmarPagamentoMp(payment) {
     checkoutSessions.delete(encontrada.id);
   }
 
+  // upsertRow atualiza a mesma linha criada como pendente na inscrição.
   syncInscricao(novaInscricao);
   return true;
 }
@@ -738,6 +746,19 @@ async function processarWebhookMp(body, query) {
   await confirmarPagamentoMp(payment);
 }
 
+// ---------------- ADMIN ----------------
+
+// Compara a chave em tempo constante, para não vazar diferenças.
+function chaveAdminValida(enviada) {
+  const esperada = process.env.ADMIN_KEY || '';
+  if (!esperada || !enviada) return false;
+
+  const a = crypto.createHash('sha256').update(String(enviada)).digest();
+  const b = crypto.createHash('sha256').update(esperada).digest();
+
+  return crypto.timingSafeEqual(a, b);
+}
+
 // ---------------- SERVIDOR ----------------
 
 const server = http.createServer(async (req, res) => {
@@ -916,7 +937,7 @@ const server = http.createServer(async (req, res) => {
         );
       }
 
-      // Só vai para o storage e para a planilha quando o pagamento for aprovado.
+      // Só vai para o storage (e para as vagas) quando o pagamento for aprovado.
       createCheckoutSession(req, res, {
         customId,
         chargeId,
@@ -924,6 +945,20 @@ const server = http.createServer(async (req, res) => {
         formaPagamento: 'Mercado Pago',
         metaPedido,
         pedido,
+      });
+
+      // Registra na planilha como pendente, sem ocupar vagas.
+      // A mesma linha vira "Confirmado (pago)" pelo upsertRow.
+      syncInscricao({
+        dataHora: dataHoraBr(),
+        ...pedido,
+        chargeId,
+        customId,
+        paymentId: '',
+        paymentUrl,
+        formaPagamento: 'Mercado Pago',
+        observacao: '',
+        status: STATUS_PENDENTE,
       });
 
       return sendJson(res, 200, {
@@ -1065,6 +1100,31 @@ const server = http.createServer(async (req, res) => {
       } finally {
         session.processing = false;
       }
+    }
+
+    // Reenvia as inscrições do storage para a planilha (recuperação).
+    if (
+      pathname === '/api/admin/resync' &&
+      method === 'POST'
+    ) {
+      if (!chaveAdminValida(req.headers['x-admin-key'])) {
+        throw new HttpError(401, 'Não autorizado.');
+      }
+
+      const lista = storage.getAll();
+      sendJson(res, 200, { ok: true, total: lista.length });
+
+      (async () => {
+        for (const item of lista) {
+          await sheetsSync.sincronizarInscricao(item);
+        }
+
+        console.log(`[Resync] ${lista.length} inscrições reenviadas.`);
+      })().catch((erro) => {
+        console.error('[Resync]', erro.message);
+      });
+
+      return;
     }
 
     if (
