@@ -439,9 +439,6 @@ function encontrarSessaoPorRef(ref) {
 
 // ---------------- CONFIRMAÇÃO DO PAGAMENTO ----------------
 
-// Pode ser chamada várias vezes (cartão, webhook, consulta de status).
-// Não há "await" entre a verificação e o registro, então no mesmo
-// processo ela não cria duas inscrições para o mesmo pagamento.
 async function confirmarPagamentoMp(payment) {
   if (
     !payment ||
@@ -519,7 +516,6 @@ async function confirmarPagamentoMp(payment) {
   }
 
   if (validarValor) {
-    // Aceita o valor do Pix (base) ou o do cartão (base + 5%).
     const esperados = [
       Math.round(Number(pedido.valorTotal) * 100),
       Math.round(valorCartao(pedido.valorTotal) * 100),
@@ -537,7 +533,6 @@ async function confirmarPagamentoMp(payment) {
 
   const novaInscricao = storage.addInscricao({
     ...pedido,
-    // Grava o valor realmente cobrado (com a taxa, no caso do cartão).
     valorTotal: Number(payment.transaction_amount || pedido.valorTotal),
     chargeId,
     customId: ref,
@@ -553,7 +548,6 @@ async function confirmarPagamentoMp(payment) {
     checkoutSessions.delete(encontrada.id);
   }
 
-  // upsertRow atualiza a mesma linha criada como pendente na inscrição.
   syncInscricao(novaInscricao);
   return true;
 }
@@ -623,7 +617,8 @@ function notificationUrlMp() {
 
 // ---------------- VALIDAÇÃO DA INSCRIÇÃO ----------------
 
-function validarInscricao(body) {
+// ⚠️ MUDANÇA 1: função agora é async
+async function validarInscricao(body) {
   const responsavel = texto(body.responsavel);
   const email = texto(body.email);
   const whatsapp = texto(body.whatsapp).replace(/\D/g, '');
@@ -701,7 +696,9 @@ function validarInscricao(body) {
     return { nome, idade };
   });
 
-  const disponibilidade = storage.getDisponibilidade();
+  // ⚠️ MUDANÇA 2: busca disponibilidade da planilha (não da memória)
+  const disponibilidade = await sheetsSync.buscarDisponibilidade();
+
   const bebes = criancas.filter((c) => c.idade <= 2).length;
   const kids = criancas.filter((c) => c.idade >= 3).length;
 
@@ -740,7 +737,6 @@ async function processarWebhookMp(body, query) {
     query.type ||
     query.topic;
 
-  // Outros tópicos (ex.: merchant_order) não trazem o id do pagamento.
   if (topic && topic !== 'payment') return;
 
   let paymentId =
@@ -755,14 +751,12 @@ async function processarWebhookMp(body, query) {
 
   if (!paymentId || !/^\d+$/.test(String(paymentId))) return;
 
-  // Consulta o Mercado Pago antes de confirmar qualquer coisa.
   const payment = await mpClient.getPaymentDetails(paymentId);
   await confirmarPagamentoMp(payment);
 }
 
 // ---------------- ADMIN ----------------
 
-// Compara a chave em tempo constante, para não vazar diferenças.
 function chaveAdminValida(enviada) {
   const esperada = process.env.ADMIN_KEY || '';
   if (!esperada || !enviada) return false;
@@ -797,9 +791,12 @@ const server = http.createServer(async (req, res) => {
       pathname === '/api/disponibilidade' &&
       method === 'GET'
     ) {
+      // ⚠️ MUDANÇA 3: busca da planilha em vez da memória
+      const disp = await sheetsSync.buscarDisponibilidade();
+
       return sendJson(res, 200, {
         ok: true,
-        ...storage.getDisponibilidade(),
+        ...disp,
 
         precos: {
           adulto: PRECO_ADULTO,
@@ -828,7 +825,6 @@ const server = http.createServer(async (req, res) => {
       });
     }
 
-    // Consulta ativa: não depende do webhook chegar.
     if (
       pathname === '/api/status' &&
       method === 'GET'
@@ -884,10 +880,12 @@ const server = http.createServer(async (req, res) => {
       method === 'POST'
     ) {
       const body = await parseBody(req);
-      const pedido = validarInscricao(body);
+
+      // ⚠️ MUDANÇA 4: await porque validarInscricao virou async
+      const pedido = await validarInscricao(body);
+
       const customId = `cura_${crypto.randomUUID()}`;
 
-      // Forma de pagamento escolhida na tela: Pix (base) ou cartão (+5%).
       const metodo = texto(body.metodoPagamento);
       const ehCartao = metodo === 'mercadopago';
       const valorCobrado = ehCartao
@@ -971,7 +969,6 @@ const server = http.createServer(async (req, res) => {
         );
       }
 
-      // Só vai para o storage (e para as vagas) quando o pagamento for aprovado.
       createCheckoutSession(req, res, {
         customId,
         chargeId,
@@ -983,8 +980,6 @@ const server = http.createServer(async (req, res) => {
         metodoPagamento: metodo,
       });
 
-      // Registra na planilha como pendente, sem ocupar vagas.
-      // A mesma linha vira "Confirmado (pago)" pelo upsertRow.
       syncInscricao({
         dataHora: dataHoraBr(),
         ...pedido,
@@ -1100,7 +1095,6 @@ const server = http.createServer(async (req, res) => {
           payload.notification_url = notificationUrl;
         }
 
-        // Pix usa chave fixa: clicar duas vezes devolve o mesmo QR Code.
         const idempotencyKey = crypto
           .createHash('sha256')
           .update(
@@ -1140,7 +1134,6 @@ const server = http.createServer(async (req, res) => {
       }
     }
 
-    // Reenvia as inscrições do storage para a planilha (recuperação).
     if (
       pathname === '/api/admin/resync' &&
       method === 'POST'
@@ -1165,7 +1158,6 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    // Confirma um pagamento pelo número da transação do Mercado Pago.
     if (
       pathname === '/api/admin/confirmar' &&
       method === 'POST'
@@ -1204,7 +1196,6 @@ const server = http.createServer(async (req, res) => {
     ) {
       const body = await parseBody(req);
 
-      // Responde na hora (o Mercado Pago espera poucos segundos).
       sendJson(res, 200, { ok: true });
 
       processarWebhookMp(body, parsedUrl.query).catch((error) => {
