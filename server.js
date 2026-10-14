@@ -729,7 +729,7 @@ async function validarInscricao(body) {
     responsavel,
     email,
     whatsapp,
-    igreja,                    // ← ✅ NOVO — vai pro payload da planilha automaticamente
+    igreja,                    // ← ✅ NOVO
     gateway: 'mercadopago',
     qtdAdultos,
     adultosNomes,
@@ -777,6 +777,30 @@ function chaveAdminValida(enviada) {
   const b = crypto.createHash('sha256').update(esperada).digest();
 
   return crypto.timingSafeEqual(a, b);
+}
+
+// ---------------- AUTO-PING (mantém o Render acordado) ----------------
+// ← ✅ NOVO
+function iniciarAutoPing() {
+  const INTERVALO = 10 * 60 * 1000; // 10 minutos
+
+  setInterval(async () => {
+    const base = baseUrl();
+
+    try {
+      const res = await fetch(`${base}/health`, {
+        signal: AbortSignal.timeout(10000),
+      });
+
+      console.log(
+        `[Auto-ping] ${new Date().toISOString()} → HTTP ${res.status}`
+      );
+    } catch (err) {
+      console.warn(`[Auto-ping] Falhou: ${err.message}`);
+    }
+  }, INTERVALO).unref();
+
+  console.log('[Auto-ping] Ativado — pingando a cada 10 minutos.');
 }
 
 // ---------------- SERVIDOR ----------------
@@ -990,7 +1014,6 @@ const server = http.createServer(async (req, res) => {
         metodoPagamento: metodo,
       });
 
-      // pedido já contém igreja → vai automaticamente p/ a planilha ✅
       syncInscricao({
         dataHora: dataHoraBr(),
         ...pedido,
@@ -1287,6 +1310,11 @@ cleanupTimer.unref();
 server.listen(PORT, () => {
   console.log(`Servidor iniciado na porta ${PORT}.`);
   console.log('Pagamentos integrados via Mercado Pago (Pix e Cartão).');
+
+  // ← ✅ NOVO — ativa auto-ping só em produção (Render)
+  if (process.env.PUBLIC_BASE_URL?.startsWith('https://')) {
+    iniciarAutoPing();
+  }
 });
 
 module.exports = server;
