@@ -364,6 +364,7 @@ function montarMetaPedido(pedido) {
     r: pedido.responsavel,
     e: pedido.email,
     w: pedido.whatsapp,
+    g: pedido.igreja,            // ← ✅ NOVO
     a: pedido.qtdAdultos,
     an: pedido.adultosNomes,
     l: pedido.qtdAlmocos,
@@ -396,6 +397,7 @@ function lerMetaPedido(payment) {
       responsavel: texto(m.r),
       email: texto(m.e),
       whatsapp: texto(m.w),
+      igreja: texto(m.g),          // ← ✅ NOVO
       qtdAdultos,
       adultosNomes: Array.isArray(m.an) ? m.an.map(texto) : [],
       qtdAlmocos,
@@ -504,6 +506,8 @@ async function confirmarPagamentoMp(payment) {
         ]
           .filter(Boolean)
           .join(''),
+
+        igreja: '',                  // ← ✅ NOVO (fallback)
 
         qtdAdultos: 0,
         adultosNomes: [],
@@ -617,11 +621,11 @@ function notificationUrlMp() {
 
 // ---------------- VALIDAÇÃO DA INSCRIÇÃO ----------------
 
-// ⚠️ MUDANÇA 1: função agora é async
 async function validarInscricao(body) {
   const responsavel = texto(body.responsavel);
   const email = texto(body.email);
   const whatsapp = texto(body.whatsapp).replace(/\D/g, '');
+  const igreja = texto(body.igreja);   // ← ✅ NOVO
 
   if (
     responsavel.length < 3 ||
@@ -633,6 +637,14 @@ async function validarInscricao(body) {
     throw new HttpError(
       400,
       'Confira nome, e-mail e WhatsApp com DDD.'
+    );
+  }
+
+  // ← ✅ NOVO — valida igreja
+  if (igreja.length < 2 || igreja.length > 200) {
+    throw new HttpError(
+      400,
+      'Informe o nome da sua igreja (entre 2 e 200 caracteres).'
     );
   }
 
@@ -696,7 +708,6 @@ async function validarInscricao(body) {
     return { nome, idade };
   });
 
-  // ⚠️ MUDANÇA 2: busca disponibilidade da planilha (não da memória)
   const disponibilidade = await sheetsSync.buscarDisponibilidade();
 
   const bebes = criancas.filter((c) => c.idade <= 2).length;
@@ -718,6 +729,7 @@ async function validarInscricao(body) {
     responsavel,
     email,
     whatsapp,
+    igreja,                    // ← ✅ NOVO — vai pro payload da planilha automaticamente
     gateway: 'mercadopago',
     qtdAdultos,
     adultosNomes,
@@ -791,7 +803,6 @@ const server = http.createServer(async (req, res) => {
       pathname === '/api/disponibilidade' &&
       method === 'GET'
     ) {
-      // ⚠️ MUDANÇA 3: busca da planilha em vez da memória
       const disp = await sheetsSync.buscarDisponibilidade();
 
       return sendJson(res, 200, {
@@ -881,7 +892,6 @@ const server = http.createServer(async (req, res) => {
     ) {
       const body = await parseBody(req);
 
-      // ⚠️ MUDANÇA 4: await porque validarInscricao virou async
       const pedido = await validarInscricao(body);
 
       const customId = `cura_${crypto.randomUUID()}`;
@@ -980,6 +990,7 @@ const server = http.createServer(async (req, res) => {
         metodoPagamento: metodo,
       });
 
+      // pedido já contém igreja → vai automaticamente p/ a planilha ✅
       syncInscricao({
         dataHora: dataHoraBr(),
         ...pedido,

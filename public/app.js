@@ -646,10 +646,18 @@ function validarPedido() {
 
   const nome = document.getElementById('nomeResponsavel');
   const telefone = document.getElementById('whatsapp');
+  const igreja = document.getElementById('igreja');   // ← ✅ NOVO
 
   if (nome.value.trim().length < 3) {
     alert('Por favor, informe o nome completo do responsável.');
     nome.focus();
+    return false;
+  }
+
+  // ← ✅ NOVO — valida igreja preenchida
+  if (!igreja || igreja.value.trim().length < 2) {
+    alert('Por favor, informe sua igreja.');
+    igreja?.focus();
     return false;
   }
 
@@ -1045,6 +1053,7 @@ async function finalizarPedido() {
       responsavel: document.getElementById('nomeResponsavel').value.trim(),
       email: document.getElementById('email').value.trim(),
       whatsapp: document.getElementById('whatsapp').value.trim(),
+      igreja: document.getElementById('igreja').value.trim(),   // ← ✅ NOVO
 
       qtdAdultos: state.qtdAdultos,
       adultosNomes: state.adultosNomes.map((nome) => nome.trim()),
